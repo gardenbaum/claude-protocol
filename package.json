@@ -1,12 +1,12 @@
 {
   "name": "@gardenbaum/claude-protocol",
-  "version": "3.4.1",
+  "version": "3.4.2",
   "description": "Fork of weselow/claude-protocol: enforcement-first orchestration for Claude Code with worktree-aware getRepoRoot fix.",
   "license": "MIT",
   "homepage": "https://github.com/gardenbaum/claude-protocol#readme",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gardenbaum/claude-protocol"
+    "url": "git+https://github.com/gardenbaum/claude-protocol.git"
   },
   "bugs": {
     "url": "https://github.com/gardenbaum/claude-protocol/issues"
@@ -35,7 +35,7 @@
     "test:py": "python -m pytest tests/test_bootstrap.py -v"
   },
   "bin": {
-    "claude-protocol": "./scripts/cli.js"
+    "claude-protocol": "scripts/cli.js"
   },
   "devDependencies": {
     "vitest": "^4.0.18"

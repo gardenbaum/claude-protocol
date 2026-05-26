@@ -1,6 +1,6 @@
 {
   "name": "@gardenbaum/claude-protocol",
-  "version": "3.4.2",
+  "version": "3.4.3",
   "description": "Fork of weselow/claude-protocol: enforcement-first orchestration for Claude Code with worktree-aware getRepoRoot fix.",
   "license": "MIT",
   "homepage": "https://github.com/gardenbaum/claude-protocol#readme",

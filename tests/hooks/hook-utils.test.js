@@ -1,4 +1,8 @@
 import { describe, it, expect } from 'vitest';
+import { execFileSync } from 'child_process';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 
 // hook-utils.cjs exports pure functions we can test directly
 const {
@@ -6,6 +10,7 @@ const {
   parseBeadId,
   parseEpicId,
   containsPathSegment,
+  getRepoRoot,
 } = require('../../templates/hooks/hook-utils.cjs');
 
 describe('getField', () => {
@@ -115,5 +120,65 @@ describe('containsPathSegment', () => {
 
   it('detects .claude segment', () => {
     expect(containsPathSegment('/project/.claude/plans/plan.md', '.claude')).toBe(true);
+  });
+});
+
+describe('getRepoRoot', () => {
+  // Helper: create tmp git repo with one commit + a linked worktree.
+  // Returns { tmpDir, mainRoot, worktreePath, cleanup }. `mainRoot` is the
+  // realpath of tmpDir (macOS /tmp -> /private/tmp symlink resolution).
+  function setupRepoWithWorktree() {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-getrepo-'));
+    const mainRoot = fs.realpathSync(tmpDir);
+    const git = (args, cwd) => execFileSync('git', args, { cwd, stdio: 'pipe' });
+
+    git(['init', '-q', '-b', 'main'], mainRoot);
+    git(['config', 'user.email', 'test@test'], mainRoot);
+    git(['config', 'user.name', 'test'], mainRoot);
+    git(['config', 'commit.gpgsign', 'false'], mainRoot);
+    git(['commit', '--allow-empty', '-m', 'init', '-q'], mainRoot);
+
+    const worktreePath = path.join(mainRoot, '.worktrees', 'bd-test');
+    git(['worktree', 'add', '-q', '-b', 'bd-test', worktreePath, 'HEAD'], mainRoot);
+
+    return {
+      mainRoot,
+      worktreePath: fs.realpathSync(worktreePath),
+      cleanup: () => {
+        try { git(['worktree', 'remove', '--force', worktreePath], mainRoot); } catch { /* best effort */ }
+        fs.rmSync(mainRoot, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it('returns main repo root when called from main checkout', () => {
+    const { mainRoot, cleanup } = setupRepoWithWorktree();
+    try {
+      expect(fs.realpathSync(getRepoRoot(mainRoot))).toBe(mainRoot);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('returns main repo root when called from inside a linked worktree', () => {
+    // Regression: bug from ch_tosca_mailorder-c3a / bd-vn8.1 incident
+    // (2026-05-26). 'git rev-parse --show-toplevel' returns the worktree path
+    // from inside a linked worktree; downstream code then builds nested
+    // '.worktrees/bd-X/.worktrees/bd-X' paths and blocks completion.
+    const { mainRoot, worktreePath, cleanup } = setupRepoWithWorktree();
+    try {
+      expect(fs.realpathSync(getRepoRoot(worktreePath))).toBe(mainRoot);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('returns null outside any git repo', () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cp-nogit-'));
+    try {
+      expect(getRepoRoot(tmpDir)).toBeNull();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

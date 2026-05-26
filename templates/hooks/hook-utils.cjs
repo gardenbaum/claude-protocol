@@ -163,8 +163,27 @@ function execCommandJSON(cmd, args, opts) {
 // Git helpers
 // ---------------------------------------------------------------------------
 
-function getRepoRoot() {
-  return execCommand('git', ['rev-parse', '--show-toplevel']);
+/**
+ * Return the absolute path of the main repository checkout.
+ *
+ * Uses `git rev-parse --git-common-dir` (always points at the main repo's
+ * .git directory, even from inside a linked worktree) and returns its
+ * parent. `--show-toplevel` would return the worktree path when called
+ * from a linked worktree, which breaks hooks that build
+ * `<repoRoot>/.worktrees/bd-X` paths.
+ *
+ * @param {string} [cwd] - directory to run git from; defaults to process.cwd()
+ * @returns {string|null} absolute main-repo path, or null if not in a git repo
+ */
+function getRepoRoot(cwd) {
+  const opts = cwd ? { cwd } : undefined;
+  const commonDir = execCommand(
+    'git',
+    ['rev-parse', '--path-format=absolute', '--git-common-dir'],
+    opts,
+  );
+  if (!commonDir) return null;
+  return path.dirname(commonDir);
 }
 
 function getCurrentBranch() {

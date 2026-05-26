@@ -5,7 +5,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { injectText, execCommand, getProjectDir, runHook } = require('./hook-utils.cjs');
+const { injectText, execCommand, getProjectDir, getRepoRoot, runHook } = require('./hook-utils.cjs');
 
 runHook('session-start', () => {
   const projectDir = getProjectDir();
@@ -27,7 +27,9 @@ runHook('session-start', () => {
   // ============================================================
   // Dirty Parent Check
   // ============================================================
-  const repoRoot = execCommand('git', ['-C', projectDir, 'rev-parse', '--show-toplevel']);
+  // getRepoRoot resolves to the MAIN repo root even when projectDir is a
+  // linked worktree (CLAUDE_PROJECT_DIR may point at .worktrees/bd-X).
+  const repoRoot = getRepoRoot(projectDir);
   if (repoRoot) {
     const dirty = execCommand('git', ['-C', repoRoot, 'status', '--porcelain']);
     if (dirty) {
@@ -40,8 +42,8 @@ runHook('session-start', () => {
   // ============================================================
   // Auto-cleanup: Detect merged PRs and cleanup worktrees
   // ============================================================
-  const worktreesDir = path.join(projectDir, '.worktrees');
-  if (fs.existsSync(worktreesDir) && repoRoot) {
+  const worktreesDir = repoRoot ? path.join(repoRoot, '.worktrees') : null;
+  if (worktreesDir && fs.existsSync(worktreesDir)) {
     const worktreeList = execCommand('git', ['-C', repoRoot, 'worktree', 'list', '--porcelain']);
     if (worktreeList) {
       const worktreeLines = worktreeList.split('\n')

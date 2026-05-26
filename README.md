@@ -4,14 +4,20 @@
 
 **Structure that survives context loss. Every task tracked. Every decision logged.**
 
-[![npm version](https://img.shields.io/npm/v/claude-protocol?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/claude-protocol)
-[![GitHub stars](https://img.shields.io/github/stars/weselow/claude-protocol?style=for-the-badge&logo=github&color=181717)](https://github.com/weselow/claude-protocol)
+[![npm version](https://img.shields.io/npm/v/@gardenbaum/claude-protocol?style=for-the-badge&logo=npm&logoColor=white&color=CB3837)](https://www.npmjs.com/package/@gardenbaum/claude-protocol)
+[![GitHub stars](https://img.shields.io/github/stars/gardenbaum/claude-protocol?style=for-the-badge&logo=github&color=181717)](https://github.com/gardenbaum/claude-protocol)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)](LICENSE)
 
 <br>
 
+> **Fork notice.** This is the `@gardenbaum/claude-protocol` fork of
+> [weselow/claude-protocol](https://github.com/weselow/claude-protocol).
+> Diverges with a worktree-aware `getRepoRoot` (fixes nested
+> `.worktrees/bd-X/.worktrees/bd-X` blocking SubagentStop). The CLI command
+> stays `claude-protocol` after install.
+
 ```bash
-npx claude-protocol init
+npx @gardenbaum/claude-protocol init
 ```
 
 <br>
@@ -50,7 +56,7 @@ v3 is a ground-up rewrite. Different architecture, different philosophy. See [de
 
 ### v3.3.0 (2026-04-22)
 
-- **Upgrade mechanism** — new `npx claude-protocol upgrade` command with
+- **Upgrade mechanism** — new `npx @gardenbaum/claude-protocol upgrade` command with
   `--dry-run` and `--all <parent>` for batch runs across workspaces. Every
   removal is backed up to `.claude/.upgrades/<timestamp>/`.
 - **Memory system removed** — `knowledge.jsonl`, `memory-capture.cjs`, and
@@ -112,7 +118,7 @@ CLAUDE.md                   # Orchestrator instructions
 
 ### Safe for existing projects — and for upgrades
 
-First install and re-install use the same command: `npx claude-protocol init`.
+First install and re-install use the same command: `npx @gardenbaum/claude-protocol init`.
 
 - **Hooks and skills** — always updated to the latest version (enforcement code).
 - **Rules and agents** — updated only if you haven't modified them. Modified files are preserved; the new version is saved to `.claude/.upgrades/` for manual review.
@@ -157,7 +163,7 @@ This file is auto-loaded into every agent context. No per-tech supervisor genera
 ### Install
 
 ```bash
-npx claude-protocol init
+npx @gardenbaum/claude-protocol init
 ```
 
 Restart Claude Code. Run `/project-discovery`.
@@ -176,7 +182,7 @@ Restart Claude Code. Run `/project-discovery`.
 
 ```bash
 cd /path/to/claude-protocol && npm link
-npx claude-protocol init  # works in any project
+npx @gardenbaum/claude-protocol init  # works in any project
 ```
 
 ## Upgrade
@@ -187,7 +193,7 @@ claude-protocol's own artifacts are cleaned up.
 ### Preview (recommended first)
 
 ```bash
-npx claude-protocol@latest upgrade --dry-run
+npx @gardenbaum/claude-protocol@latest upgrade --dry-run
 ```
 
 Prints the exact list of files, directories, and settings-hook entries that
@@ -196,7 +202,7 @@ would change. Touches nothing.
 ### Apply
 
 ```bash
-npx claude-protocol@latest upgrade
+npx @gardenbaum/claude-protocol@latest upgrade
 ```
 
 Runs the init flow and then strips obsolete artifacts. Every removal is
@@ -206,7 +212,7 @@ copying files out of the backup directory.
 ### Batch (multiple projects)
 
 ```bash
-npx claude-protocol@latest upgrade --all /path/to/parent
+npx @gardenbaum/claude-protocol@latest upgrade --all /path/to/parent
 ```
 
 Iterates every direct subdirectory of the parent that contains a `.beads/`
@@ -277,7 +283,7 @@ Subagents are blocked from finishing unless:
 
 ## Dev Rules
 
-Included by default. Skip with `--no-rules`. Russian version: `npx claude-protocol init --lang ru`.
+Included by default. Skip with `--no-rules`. Russian version: `npx @gardenbaum/claude-protocol init --lang ru`.
 
 | Rule | What it does |
 |------|-------------|

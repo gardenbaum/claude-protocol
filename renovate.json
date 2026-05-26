@@ -2,14 +2,26 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "platform": "github",
   "autodiscover": true,
-  "autodiscoverFilter": ["gardenbaum/*"],
+  "autodiscoverFilter": [
+    "gardenbaum/*",
+    "!gardenbaum/postcards",
+    "!gardenbaum/wtfis",
+    "!gardenbaum/all-in-one-wp-migration"
+  ],
+  "forkProcessing": "enabled",
   "onboarding": false,
   "requireConfig": "optional",
   "extends": ["config:recommended"],
   "timezone": "Europe/Zurich",
+  "dependencyDashboardApproval": true,
   "prHourlyLimit": 2,
   "prConcurrentLimit": 10,
   "packageRules": [
+    {
+      "description": "claude-protocol gets automatic PR creation (no dashboard approval)",
+      "matchRepositories": ["gardenbaum/claude-protocol"],
+      "dependencyDashboardApproval": false
+    },
     {
       "matchManagers": ["github-actions"],
       "groupName": "github-actions"

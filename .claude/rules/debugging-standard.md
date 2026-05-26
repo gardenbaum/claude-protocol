@@ -1,25 +1,25 @@
-# Стандарт отладки
+# Debugging Standard
 
-## Главное правило
+## Core rule
 
-Не борись с ошибкой повторением одного и того же действия. Если попытка исправить не сработала — не пробуй ещё раз то же самое. Шаг назад, новый план.
+Don't fight an error by repeating the same action. If your fix didn't work — don't try the same thing again. Step back, new plan.
 
-## Триггер: когда правило срабатывает
+## Trigger: when this rule fires
 
-**Одна и та же ошибка повторилась после осознанной попытки её исправить.** Не «упало дважды подряд» (так бывает с флаки-тестами, сетью, race conditions), а «я применил фикс, ошибка осталась».
+**The same error returns after a deliberate attempt to fix it.** Not "it failed twice in a row" (that happens with flaky tests, network, race conditions), but "I applied a fix and the error is still there".
 
-## Что делать, когда триггер сработал
+## What to do when the trigger fires
 
-1. **Память beads:** `bd memories <ключевые слова из ошибки>` — может, уже решали в другом проекте
-2. **Проект:** прочитай исходник места, где падает; перечитай документацию используемой библиотеки/API
-3. **Веб (только если предыдущее не дало ответа):** искать формулировку ошибки + контекст (язык, фреймворк, версия)
-4. **3+ варианта:** сформулируй минимум три альтернативных способа исправления (см. также правило 3-х альтернатив в `implementation-standard.md`)
-5. **Выбор:** простейший работающий вариант, не первый пришедший в голову
-6. **После фикса:** `bd remember "<специфичное описание корневой причины и фикса, чтобы найти через память в следующий раз>"`
+1. **Beads memory:** `bd memories <keywords from the error>` — maybe already solved in another project
+2. **Project:** read the source at the failure point; re-read the docs of the library/API in use
+3. **Web (only if the above didn't help):** search the error wording + context (language, framework, version)
+4. **3+ alternatives:** formulate at least three alternative fixes (see also Rule of 3 Alternatives in `implementation-standard.md`)
+5. **Pick:** the simplest working option, not the first one that came to mind
+6. **After the fix:** `bd remember "<specific description of root cause and fix so next time it's findable via memory>"`
 
-## Запреты
+## Banned
 
-- Повторять то же действие в надежде на другой результат
-- Глотать ошибку `try/catch`'ем без понимания причины (см. `logging-standard.md`)
-- Уходить в веб до того, как прочитаны код проекта и `bd memories`
-- Записывать в `bd remember` расплывчатую формулировку вроде «исправил баг» — нужна специфика
+- Repeating the same action hoping for a different result
+- Swallowing the error with `try/catch` without understanding the cause (see `logging-standard.md`)
+- Going to the web before reading project code and `bd memories`
+- Writing vague `bd remember` notes like "fixed the bug" — be specific

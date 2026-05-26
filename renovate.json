@@ -1,0 +1,23 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "platform": "github",
+  "autodiscover": true,
+  "autodiscoverFilter": ["gardenbaum/*"],
+  "onboarding": false,
+  "requireConfig": "optional",
+  "extends": ["config:recommended"],
+  "timezone": "Europe/Zurich",
+  "prHourlyLimit": 2,
+  "prConcurrentLimit": 10,
+  "packageRules": [
+    {
+      "matchManagers": ["github-actions"],
+      "groupName": "github-actions"
+    },
+    {
+      "matchUpdateTypes": ["minor", "patch"],
+      "automerge": true,
+      "platformAutomerge": true
+    }
+  ]
+}

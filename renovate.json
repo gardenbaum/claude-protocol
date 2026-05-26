@@ -23,6 +23,11 @@
       "dependencyDashboardApproval": false
     },
     {
+      "description": "Pin Python to 3.12 line — newer majors stay on dashboard",
+      "matchPackageNames": ["python"],
+      "allowedVersions": "<3.13"
+    },
+    {
       "matchManagers": ["github-actions"],
       "groupName": "github-actions"
     },

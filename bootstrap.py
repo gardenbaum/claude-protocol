@@ -636,7 +636,7 @@ def copy_hooks(project_dir: Path, manifest: dict) -> None:
 
 
 def copy_rules_and_skills(
-    project_dir: Path, with_rules: bool, lang: str = "en",
+    project_dir: Path, with_rules: bool,
     manifest: dict = None, force: bool = False,
 ) -> list:
     """Copy beads-workflow rule, project-discovery skill, and optional dev rules."""
@@ -645,8 +645,7 @@ def copy_rules_and_skills(
     rules_dir.mkdir(parents=True, exist_ok=True)
     skipped = []
 
-    # Determine source directory based on language
-    rules_src_dir = TEMPLATES_DIR / ("rules-ru" if lang == "ru" else "rules")
+    rules_src_dir = TEMPLATES_DIR / "rules"
 
     # Always copy beads workflow (always English — it's the canonical format)
     beads_src = TEMPLATES_DIR / "rules" / "beads-workflow.md"
@@ -664,7 +663,6 @@ def copy_rules_and_skills(
             print(f"  - rules/beads-workflow.md (MODIFIED by user — skipped)")
             print(f"    New version saved to: .claude/.upgrades/{rel_key}")
 
-    # Optional dev rules (from language-specific directory)
     if with_rules:
         for rule_file in rules_src_dir.glob("*.md"):
             if rule_file.name != "beads-workflow.md":
@@ -674,8 +672,7 @@ def copy_rules_and_skills(
                 if ok:
                     shutil.copy2(rule_file, dest)
                     manifest["files"][rel_key] = file_sha256(dest)
-                    suffix = f" ({lang})" if lang != "en" else ""
-                    suffix += f" ({reason})" if reason != "new" else ""
+                    suffix = f" ({reason})" if reason != "new" else ""
                     print(f"  - rules/{rule_file.name}{suffix}")
                 else:
                     save_upgrade(project_dir, rel_key, rule_file.read_text(encoding="utf-8"))
@@ -823,7 +820,7 @@ def _print_cleanup_report(report: dict, dry_run: bool) -> None:
 
 def bootstrap_project(
     project_dir: Path, project_name: str | None, with_rules: bool,
-    lang: str, force: bool, upgrade: bool, dry_run: bool,
+    force: bool, upgrade: bool, dry_run: bool,
 ) -> int:
     """Run bootstrap for a single project. Returns exit code (0 = success)."""
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -850,7 +847,7 @@ def bootstrap_project(
     all_skipped += copy_agents(project_dir, resolved_name, manifest, force)
     copy_hooks(project_dir, manifest)
     all_skipped += copy_rules_and_skills(
-        project_dir, with_rules, lang, manifest, force,
+        project_dir, with_rules, manifest, force,
     )
     copy_settings_and_claude_md(project_dir, resolved_name)
     setup_gitignore(project_dir)
@@ -903,7 +900,7 @@ Next steps:
 
 
 def run_batch_upgrade(
-    parent_dir: Path, with_rules: bool, lang: str, force: bool, dry_run: bool,
+    parent_dir: Path, with_rules: bool, force: bool, dry_run: bool,
 ) -> int:
     """Iterate direct subdirs of parent_dir that contain .beads/ and upgrade each."""
     if not parent_dir.exists() or not parent_dir.is_dir():
@@ -923,7 +920,7 @@ def run_batch_upgrade(
         try:
             rc = bootstrap_project(
                 project_dir=child, project_name=None, with_rules=with_rules,
-                lang=lang, force=force, upgrade=True, dry_run=dry_run,
+                force=force, upgrade=True, dry_run=dry_run,
             )
             if rc == 0:
                 upgraded += 1
@@ -947,7 +944,6 @@ def main():
     parser.add_argument("--project-name", default=None, help="Project name (auto-inferred if not provided)")
     parser.add_argument("--project-dir", default=".", help="Project directory")
     parser.add_argument("--with-rules", action="store_true", help="Also copy dev rules (implementation-standard, logging, tdd)")
-    parser.add_argument("--lang", default="en", choices=["en", "ru"], help="Language for dev rules (default: en)")
     parser.add_argument("--force", action="store_true", help="Overwrite all files regardless of user modifications")
     parser.add_argument("--upgrade", action="store_true", help="Run init flow then cleanup obsolete items (uses existing manifest)")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without writing anything")
@@ -957,14 +953,14 @@ def main():
     if args.all_parent:
         parent = Path(args.all_parent).resolve()
         sys.exit(run_batch_upgrade(
-            parent_dir=parent, with_rules=args.with_rules, lang=args.lang,
+            parent_dir=parent, with_rules=args.with_rules,
             force=args.force, dry_run=args.dry_run,
         ))
 
     project_dir = Path(args.project_dir).resolve()
     sys.exit(bootstrap_project(
         project_dir=project_dir, project_name=args.project_name,
-        with_rules=args.with_rules, lang=args.lang, force=args.force,
+        with_rules=args.with_rules, force=args.force,
         upgrade=args.upgrade, dry_run=args.dry_run,
     ))
 

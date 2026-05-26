@@ -28,8 +28,6 @@ npx @gardenbaum/claude-protocol init
 
 [Why](#why) · [What Changed](#what-changed-in-v3) · [How It Works](#how-it-works) · [Installation](#installation) · [Workflow](#workflow) · [Hooks](#hooks) · [FAQ](#faq)
 
-**[Русская версия](README-ru.md)**
-
 </div>
 
 ---
@@ -175,7 +173,6 @@ Restart Claude Code. Run `/project-discovery`.
 | `--project-dir PATH` | Target directory (default: current) |
 | `--project-name NAME` | Project name for CLAUDE.md (auto-inferred from package.json / pyproject.toml / Cargo.toml / go.mod) |
 | `--no-rules` | Skip dev rules (implementation, logging, TDD, resilience) |
-| `--lang en\|ru` | Language for dev rules (default: en) |
 | `--force` | Overwrite all files, including user-modified (for clean reinstall) |
 
 ### Local development (before npm publish)
@@ -283,7 +280,7 @@ Subagents are blocked from finishing unless:
 
 ## Dev Rules
 
-Included by default. Skip with `--no-rules`. Russian version: `npx @gardenbaum/claude-protocol init --lang ru`.
+Included by default. Skip with `--no-rules`.
 
 | Rule | What it does |
 |------|-------------|

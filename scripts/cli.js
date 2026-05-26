@@ -24,14 +24,12 @@ Options:
   --project-name   Project name (auto-inferred if not provided)
   --project-dir    Project directory (default: current)
   --no-rules       Skip dev rules (implementation, logging, TDD)
-  --lang <en|ru>   Language for dev rules (default: en)
   --force          Overwrite all files regardless of user modifications
   --dry-run        Preview changes without writing (upgrade only)
   --all <parent>   Batch upgrade: iterate subdirs of <parent> with .beads/ (upgrade only)
 
 Examples:
   claude-protocol init
-  claude-protocol init --lang ru
   claude-protocol init --project-dir /path/to/project
   claude-protocol init --no-rules
   claude-protocol upgrade

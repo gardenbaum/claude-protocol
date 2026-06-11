@@ -1,3 +1,43 @@
 [tools]
 node = "24"
 python = "3.12"
+
+# Refresh the vendored Beads docs to the latest upstream. The result is committed so every
+# clone has it — this task is only for updating. Source of truth is Beads' curated docs site
+# (website/docs); a scoped prune keeps only the Claude-ecosystem integrations. Two guides with
+# no site equivalent (WORKTREES, MULTI_REPO_MIGRATION) and the CHANGELOG are vendored too,
+# since the beads-workflow rule depends on worktree mechanics and version-specific behavior.
+# Beads' own dev-facing root files (CLAUDE.md/AGENTS.md/AGENT_INSTRUCTIONS.md) are NOT vendored
+# — they document contributing to Beads itself, not using `bd`. Records the source commit.
+[tasks.docs-sync-beads]
+description = "Refresh vendored Beads docs (docs/vendor/beads/) to latest upstream"
+run = '''
+#!/usr/bin/env bash
+set -euo pipefail
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+# Fetch upstream into $tmp FIRST — a network failure then aborts WITHOUT destroying the good copy.
+git clone --depth 1 --filter=blob:none --sparse https://github.com/gastownhall/beads "$tmp"
+git -C "$tmp" sparse-checkout set website/docs docs
+
+dest="docs/vendor/beads"
+rm -rf "$dest"
+mkdir -p "$dest/guides"
+
+# 1) Curated documentation site (canonical source).
+cp -R "$tmp/website/docs" "$dest/site"
+# Prune: keep only Claude-ecosystem integrations (drop aider/cursor/codex/gemini/...).
+find "$dest/site/integrations" -type f \
+    ! -name 'claude-code.md' ! -name 'mcp-server.md' ! -name 'index.md' -delete
+
+# 2) Guides with no equivalent on the site.
+cp "$tmp/docs/WORKTREES.md"            "$dest/guides/WORKTREES.md"
+cp "$tmp/docs/MULTI_REPO_MIGRATION.md" "$dest/guides/MULTI_REPO_MIGRATION.md"
+
+# 3) Changelog — version-specific behavior the beads-workflow rule tracks.
+cp "$tmp/CHANGELOG.md" "$dest/CHANGELOG.md"
+
+git -C "$tmp" rev-parse HEAD > "$dest/UPSTREAM_COMMIT.txt"
+md=$(find "$dest" -name '*.md' | wc -l | tr -d ' ')
+echo "Beads docs synced -> $dest/ ($md md files, commit $(cat "$dest/UPSTREAM_COMMIT.txt"))"
+'''

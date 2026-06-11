@@ -169,6 +169,13 @@ cd /path/to/claude-protocol && npm link
 npx @gardenbaum/claude-protocol init  # works in any project
 ```
 
+### Vendored Beads docs
+
+The current `bd` reference is vendored under `docs/vendor/beads/` (committed, offline) so the
+`beads-workflow` rule can be kept accurate against real `bd` behavior. Start at the relevance
+triage in [`docs/beads-reading-guide.md`](docs/beads-reading-guide.md); refresh to the latest
+upstream with `mise run docs-sync-beads`. Not shipped to npm — it lives only in this repo.
+
 ## Upgrade
 
 Existing projects upgrade safely — user-modified files are preserved; only

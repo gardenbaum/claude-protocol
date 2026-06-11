@@ -4,6 +4,11 @@
 
 Context gets compacted. Sessions restart. Beads persist.
 
+> **Reference (vendored, offline):** the current `bd` docs live in `docs/vendor/beads/`.
+> Start at the relevance triage `docs/beads-reading-guide.md`, then open the specific page
+> it points to. Refresh to latest upstream with `mise run docs-sync-beads`. For ad-hoc
+> lookups, `bd <cmd> --help` is always authoritative.
+
 ### When to create a bead — ALWAYS if:
 - User asks to implement, fix, refactor, or change anything
 - You discover a bug, tech debt, or improvement during work

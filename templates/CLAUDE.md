@@ -18,7 +18,7 @@
 
 ## Workflow
 
-**Beads = single source of truth.** Every task, bug, tech debt, and follow-up goes into beads. Context gets compacted — beads persist. See `.claude/rules/beads-workflow.md` for when/how.
+bd's own `bd prime` hook (auto-run at session start and after compaction) provides the beads workflow basics. This file adds the **orchestration** layer on top. See `.claude/rules/beads-workflow.md` for the worktree-per-bead protocol.
 
 ### Standalone (single task)
 

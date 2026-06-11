@@ -367,6 +367,22 @@ class TestRunBd:
         monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
         assert bootstrap._run_bd(["x"], tmp_path, "x") is False
 
+    def test_returns_false_on_nonzero_exit(self, tmp_path, monkeypatch, capsys):
+        class FakeResult:
+            returncode = 1
+            stdout = ""
+            stderr = "boom"
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", lambda *a, **k: FakeResult())
+        assert bootstrap._run_bd(["x"], tmp_path, "x") is False
+
+    def test_returns_false_on_oserror(self, tmp_path, monkeypatch, capsys):
+        def fake_run(*a, **k):
+            raise OSError("cannot start bd")
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        assert bootstrap._run_bd(["x"], tmp_path, "x") is False
+
 
 class TestGitOriginUrl:
     def test_returns_url_when_origin_set(self, tmp_path, monkeypatch):

@@ -620,7 +620,8 @@ def _git_origin_url(project_dir: Path) -> str | None:
     try:
         result = subprocess.run(
             ["git", "remote", "get-url", "origin"], cwd=project_dir,
-            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10,
+            capture_output=True, text=True,
+            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=10,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -631,15 +632,10 @@ def _git_origin_url(project_dir: Path) -> str | None:
 def configure_beads_sync(project_dir: Path) -> bool:
     """Wire automatic team sync + readable git backup (best-effort, never raises).
 
-    - export.auto/git-add=true  → .beads/issues.jsonl rides in normal commits
-      (human-readable backup in the same git remote as the code).
-    - dolt remote 'origin'      → Dolt history is pushed/pulled under
-      refs/dolt/data on the code's existing origin (the canonical team sync).
-    - bd hooks install --shared → committed git hooks auto-sync Dolt on
-      push/pull, so the agent never has to run a manual sync command.
-
-    bd 1.0.5 defaults export.* to false; auto-export no longer drops a stray
-    /issues.jsonl in worktrees (verified), so enabling it is safe.
+    Enables export.auto/git-add (readable .beads/issues.jsonl rides in commits),
+    adds a Dolt remote on the git origin (sync under refs/dolt/data), and installs
+    shared git hooks that auto-sync Dolt on push/pull. bd 1.0.5 defaults export.*
+    to false and no longer strays /issues.jsonl into worktrees, so this is safe.
     """
     if not shutil.which("bd"):
         print("  - bd not available, skipping sync config "
@@ -658,7 +654,10 @@ def configure_beads_sync(project_dir: Path) -> bool:
         print("  - no git origin; Dolt sync stays local until a remote is added")
     _run_bd(["hooks", "install", "--shared"], project_dir,
             "install shared git hooks")
-    print("  - Sync configured (JSONL git-backup + Dolt remote + shared hooks)")
+    if ok:
+        print("  - Sync configured (JSONL git-backup + Dolt remote + shared hooks)")
+    else:
+        print("  - Sync setup attempted (some steps may need bd/Dolt running)")
     return ok
 
 

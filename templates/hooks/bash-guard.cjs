@@ -104,7 +104,7 @@ runHook('bash-guard', () => {
         if (Array.isArray(allBeads)) {
           const prefix = closeId + '.';
           const incomplete = allBeads.filter(
-            b => b.id && b.id.startsWith(prefix) && b.status !== 'done' && b.status !== 'closed'
+            b => b.id && b.id.startsWith(prefix) && b.status !== 'closed'
           );
           if (incomplete.length > 0) {
             const list = incomplete.map(b => `${b.id} (${b.status})`).join(', ');

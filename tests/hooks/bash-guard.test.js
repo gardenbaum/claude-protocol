@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 
 const HOOK_PATH = path.resolve(__dirname, '../../templates/hooks/bash-guard.cjs');
 
@@ -147,6 +149,76 @@ describe('bash-guard hook', () => {
       );
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toContain('deny');
+    });
+  });
+
+  describe('epic close validation', () => {
+    /**
+     * Create a temp dir with a fake `bd` script that returns canned JSON
+     * based on the subcommand arguments. Also initialises a bare git repo
+     * there so `git remote get-url origin` fails (no remote) — the hook then
+     * skips the PR-merge check and goes straight to the children check.
+     *
+     * Returns { tmpDir, fakeBinDir } — caller must rm -rf tmpDir after use.
+     */
+    function setupEpicEnv(showJson, listJson) {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bash-guard-epic-'));
+      const fakeBinDir = path.join(tmpDir, 'bin');
+      fs.mkdirSync(fakeBinDir);
+
+      // Fake bd: responds to `bd show <id> --json` and `bd list --json`
+      const fakeBd = path.join(fakeBinDir, 'bd');
+      fs.writeFileSync(fakeBd, [
+        '#!/bin/sh',
+        `case "$*" in`,
+        `  "show E --json") echo '${showJson}' ;;`,
+        `  "list --json") echo '${listJson}' ;;`,
+        `  *) exit 1 ;;`,
+        'esac',
+      ].join('\n'));
+      fs.chmodSync(fakeBd, 0o755);
+
+      // Fake git: always exits 1 (no remote) so PR check is skipped
+      const fakeGit = path.join(fakeBinDir, 'git');
+      fs.writeFileSync(fakeGit, '#!/bin/sh\nexit 1\n');
+      fs.chmodSync(fakeGit, 0o755);
+
+      return { tmpDir, fakeBinDir };
+    }
+
+    it('allows closing an epic whose only child is already closed', () => {
+      const showJson = JSON.stringify([{ id: 'E', issue_type: 'epic' }]);
+      const listJson = JSON.stringify([{ id: 'E.1', status: 'closed' }]);
+      const { tmpDir, fakeBinDir } = setupEpicEnv(showJson, listJson);
+
+      try {
+        const result = runHook(
+          makeInput('bd close E'),
+          { PATH: `${fakeBinDir}:${process.env.PATH}` },
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).not.toContain('deny');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('denies closing an epic with an incomplete (open) child', () => {
+      const showJson = JSON.stringify([{ id: 'E', issue_type: 'epic' }]);
+      const listJson = JSON.stringify([{ id: 'E.1', status: 'open' }]);
+      const { tmpDir, fakeBinDir } = setupEpicEnv(showJson, listJson);
+
+      try {
+        const result = runHook(
+          makeInput('bd close E'),
+          { PATH: `${fakeBinDir}:${process.env.PATH}` },
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).toContain('deny');
+        expect(result.stdout).toContain('E.1');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 });

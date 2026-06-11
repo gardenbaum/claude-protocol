@@ -594,6 +594,42 @@ def install_beads(project_dir: Path) -> bool:
     return True
 
 
+def _run_bd(args: list, project_dir: Path, label: str) -> bool:
+    """Run a best-effort `bd` command. Never raises; returns True on rc==0."""
+    if not shutil.which("bd"):
+        print(f"  - bd not available, skipping {label}")
+        return False
+    try:
+        result = subprocess.run(
+            ["bd", *args], cwd=project_dir, capture_output=True, text=True,
+            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
+        )
+    except subprocess.TimeoutExpired:
+        print(f"  - {label} timed out (Dolt server not running?)")
+        return False
+    except OSError as exc:
+        print(f"  - {label} failed to start: {exc}")
+        return False
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        print(f"  - WARNING: {label} failed" + (f": {detail}" if detail else ""))
+        return False
+    return True
+
+
+def _git_origin_url(project_dir: Path) -> str | None:
+    """Return the URL of git remote 'origin', or None if unset/unavailable."""
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"], cwd=project_dir,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    url = (result.stdout or "").strip()
+    return url if result.returncode == 0 and url else None
+
+
 def configure_beads_export(project_dir: Path) -> bool:
     """Disable bd's auto-staging of issues.jsonl (export.git-add=false).
 

@@ -356,6 +356,56 @@ class TestConfigureBeadsExport:
 
 
 # ============================================================================
+# _run_bd / _git_origin_url helpers
+# ============================================================================
+
+class TestRunBd:
+    def test_returns_true_on_success(self, tmp_path, monkeypatch, capsys):
+        class FakeResult:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs.get("cwd")))
+            return FakeResult()
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+
+        assert bootstrap._run_bd(["config", "set", "x", "y"], tmp_path, "set x") is True
+        assert calls == [(["bd", "config", "set", "x", "y"], tmp_path)]
+
+    def test_returns_false_when_bd_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: None)
+        assert bootstrap._run_bd(["x"], tmp_path, "x") is False
+
+    def test_returns_false_on_timeout(self, tmp_path, monkeypatch, capsys):
+        def fake_run(*a, **k):
+            raise bootstrap.subprocess.TimeoutExpired(cmd="bd", timeout=15)
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        assert bootstrap._run_bd(["x"], tmp_path, "x") is False
+
+
+class TestGitOriginUrl:
+    def test_returns_url_when_origin_set(self, tmp_path, monkeypatch):
+        class FakeResult:
+            returncode = 0
+            stdout = "git@github.com:o/r.git\n"
+            stderr = ""
+        monkeypatch.setattr(bootstrap.subprocess, "run", lambda *a, **k: FakeResult())
+        assert bootstrap._git_origin_url(tmp_path) == "git@github.com:o/r.git"
+
+    def test_returns_none_when_no_origin(self, tmp_path, monkeypatch):
+        class FakeResult:
+            returncode = 128
+            stdout = ""
+            stderr = "no such remote"
+        monkeypatch.setattr(bootstrap.subprocess, "run", lambda *a, **k: FakeResult())
+        assert bootstrap._git_origin_url(tmp_path) is None
+
+
+# ============================================================================
 # Templates directory
 # ============================================================================
 

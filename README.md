@@ -64,7 +64,7 @@ Stripped everything that doesn't improve output. Added everything that does.
 
 **Added:**
 - Checklist verification — hook blocks completion if requirements from description aren't checked off
-- Session-start dashboard — shows open tasks, merged PRs awaiting cleanup, stale beads, recent knowledge
+- Session-start orchestration — merged-worktree ACTION REQUIRED, open PRs, dirty-main warning (bd prime owns bead workflow context)
 - Mandatory size check — automatic decision: single bead or epic with children
 - Plan-to-beads requirement — all planned tasks must be created as beads before implementation starts
 - LEARNED quality enforcement — specific format: problem → solution → context
@@ -118,7 +118,7 @@ Use `--force` to overwrite all files regardless of modifications.
 
 Every time you start Claude Code, the `session-start` hook shows:
 
-- **bd `bd prime`** (bd's own hook) — beads workflow context, ready work, and persistent memories; re-injected after compaction
+- **`bd prime`** (bd's own hook) — beads workflow context, ready work, and persistent memories; re-injected after compaction
 - **ACTION REQUIRED** — merged worktrees with unclosed beads
 - **Open PRs** — your PRs awaiting review
 - **Dirty main** — warns if the main working tree has uncommitted changes

@@ -10,19 +10,9 @@
 
 <br>
 
-> **Fork notice.** This is the `@gardenbaum/claude-protocol` fork of
-> [weselow/claude-protocol](https://github.com/weselow/claude-protocol).
-> Diverges with a worktree-aware `getRepoRoot` (fixes nested
-> `.worktrees/bd-X/.worktrees/bd-X` blocking SubagentStop). The CLI command
-> stays `claude-protocol` after install.
-
 ```bash
 npx @gardenbaum/claude-protocol init
 ```
-
-<br>
-
-![The Claude Protocol](screenshots/kanbanui.png)
 
 <br>
 
@@ -46,9 +36,7 @@ Constraints over instructions. What's blocked can't be ignored.
 
 ## Origin
 
-This project started as a fork of [The Claude Protocol](https://github.com/AvivK5498/The-Claude-Protocol) by Aviv Kaplan. The original author appears to have stopped development — PRs go unreviewed, and the underlying tools (beads CLI, Claude Code hooks API) have changed significantly.
-
-v3 is a ground-up rewrite. Different architecture, different philosophy. See [decisions.md](docs/decisions-en.md) for full rationale.
+A ground-up rewrite with its own architecture and philosophy. See [decisions.md](docs/decisions.md) for the full rationale. Prior-art credits are listed at the [bottom](#credits).
 
 ## What Changed in v3
 
@@ -72,7 +60,7 @@ Stripped everything that doesn't improve output. Added everything that does.
 - Per-tech supervisor generation — 500+ lines of context per stack, Claude already knows these technologies
 - Agent personas ("Rex the reviewer") — based on outdated prompting patterns, just fills context
 - MCP Provider Delegator, Kanban UI, Web Interface Guidelines — unnecessary infrastructure
-- 19 bash hooks — replaced with 8 cross-platform Node.js hooks
+- 19 bash hooks — replaced with cross-platform Node.js hooks
 
 **Added:**
 - Checklist verification — hook blocks completion if requirements from description aren't checked off
@@ -88,7 +76,7 @@ Stripped everything that doesn't improve output. Added everything that does.
 - Knowledge base search is mandatory before every investigation
 - Dev rules (implementation, logging, TDD) included by default
 
-Full details: [docs/decisions-en.md](docs/decisions-en.md)
+Full details: [docs/decisions.md](docs/decisions.md)
 
 ## How It Works
 
@@ -99,7 +87,7 @@ Full details: [docs/decisions-en.md](docs/decisions-en.md)
   agents/
     code-reviewer.md        # Adversarial 3-phase review
     merge-supervisor.md     # Conflict resolution protocol
-  hooks/                    # 8 Node.js enforcement hooks
+  hooks/                    # 6 Node.js enforcement hooks
   rules/
     beads-workflow.md       # Task lifecycle, bd command reference
     implementation-standard.md
@@ -111,7 +99,7 @@ Full details: [docs/decisions-en.md](docs/decisions-en.md)
   settings.json             # Hook configuration
   .manifest.json            # File hashes for safe upgrades
 CLAUDE.md                   # Orchestrator instructions
-.beads/                     # Task database + knowledge base
+.beads/                     # Task database
 ```
 
 ### Safe for existing projects — and for upgrades
@@ -130,11 +118,10 @@ Use `--force` to overwrite all files regardless of modifications.
 
 Every time you start Claude Code, the `session-start` hook shows:
 
-- **ACTION REQUIRED** — merged worktrees with unclosed beads, stale `inreview` tasks
+- **ACTION REQUIRED** — merged worktrees with unclosed beads
 - **In Progress** — beads to resume
 - **Ready** — unblocked beads available for dispatch
 - **Blocked / Stale** — beads waiting on dependencies or inactive for 3+ days
-- **Recent Knowledge** — last 5 LEARNED entries from the knowledge base
 - **Open PRs** — your PRs awaiting review
 
 No manual checking. Context is rebuilt automatically.
@@ -259,9 +246,9 @@ git checkout -b fix-typo     # must be off main
 ### Completion verification
 
 Subagents are blocked from finishing unless:
+- Completion report present (`BEAD {ID} COMPLETE` + worktree)
 - `Checklist:` section present with all `[x]` items checked
-- Bead status set to `inreview`
-- Code committed and pushed
+- Code committed and pushed from the worktree
 - Comment left on bead
 - Response within verbosity limits (25 lines / 1200 chars)
 
@@ -271,12 +258,10 @@ Subagents are blocked from finishing unless:
 |------|-------|-------------|
 | enforce-branch-before-edit | PreToolUse (Edit/Write) | Blocks edits on main. Asks confirmation on feature branches with file name and change size. |
 | bash-guard | PreToolUse (Bash) | Blocks `--no-verify`. Requires description on `bd create`. Validates epic close (all children done, PR merged). |
-| validate-completion | SubagentStop | Checks worktree, push, status, checklist, comment, verbosity. |
-| memory-capture | PostToolUse (Bash) | Extracts LEARNED entries → `.beads/memory/knowledge.jsonl` with auto-tags. |
-| session-start | SessionStart | Surfaces tasks, merged PRs, knowledge, ACTION REQUIRED reminders. |
+| validate-completion | SubagentStop | Checks completion report, checklist, comment, worktree committed + pushed, verbosity. |
+| session-start | SessionStart | Surfaces tasks, merged PRs, ACTION REQUIRED reminders. |
 | nudge-claude-md-update | PreCompact | Reminds to update CLAUDE.md before context compaction. |
 | hook-utils | — | Shared utilities: getField, parseBeadId, deny/ask/block, execCommand. |
-| recall | — | Knowledge base search: `node .beads/memory/recall.cjs "keyword"`. |
 
 ## Dev Rules
 

@@ -1170,3 +1170,42 @@ class TestBdDoctorSoftFailure:
         assert "line 0" in out
         assert "line 19" in out
         assert "line 20" not in out  # Truncated at 20
+
+
+# ============================================================================
+# settings merge must preserve bd's own SessionStart hook
+# ============================================================================
+
+class TestSettingsMergePreservesBdHook:
+    def test_bd_prime_hook_survives_merge(self, tmp_path):
+        # Simulate what `bd init` wrote first.
+        settings_dir = tmp_path / ".claude"
+        settings_dir.mkdir(parents=True)
+        bd_settings = {
+            "hooks": {"SessionStart": [
+                {"hooks": [{"command": "bd prime --hook-json", "type": "command"}],
+                 "matcher": ""}
+            ]}
+        }
+        (settings_dir / "settings.json").write_text(json.dumps(bd_settings))
+
+        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
+
+        merged = json.loads((settings_dir / "settings.json").read_text())
+        cmds = [h["hooks"][0]["command"] for h in merged["hooks"]["SessionStart"]]
+        assert "bd prime --hook-json" in cmds  # bd's hook preserved
+        assert any("session-start.cjs" in c for c in cmds)  # ours added too
+
+
+class TestClaudeMdAppendIdempotent:
+    def test_orchestration_appended_once(self, tmp_path):
+        (tmp_path / ".claude").mkdir()
+        claude = tmp_path / "CLAUDE.md"
+        claude.write_text("# Project\n\n<!-- BEGIN BEADS INTEGRATION -->\nbd block\n")
+
+        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
+        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
+
+        content = claude.read_text()
+        assert content.count("<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->") == 1
+        assert "<!-- BEGIN BEADS INTEGRATION -->" in content  # bd's block preserved

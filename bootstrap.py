@@ -811,15 +811,17 @@ def copy_settings_and_claude_md(project_dir: Path, project_name: str) -> None:
     claude_src = TEMPLATES_DIR / "CLAUDE.md"
     if claude_src.exists():
         beads_content = claude_src.read_text(encoding='utf-8').replace("[Project]", project_name)
+        cp_marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
         if claude_dest.exists():
             existing_content = claude_dest.read_text(encoding='utf-8')
-            if "## Workflow" in existing_content and "beads" in existing_content.lower():
-                print("  - CLAUDE.md (already has beads section, skipped)")
+            if cp_marker in existing_content:
+                print("  - CLAUDE.md (orchestration section present, skipped)")
             else:
-                separator = "\n\n---\n\n# Beads Orchestration\n\n"
+                # Coexist with bd's own beads block — append after it.
+                separator = f"\n\n---\n\n{cp_marker}\n"
                 with open(claude_dest, "a", encoding="utf-8") as f:
                     f.write(separator + beads_content)
-                print("  - CLAUDE.md (appended beads section)")
+                print("  - CLAUDE.md (appended orchestration section)")
         else:
             claude_dest.write_text(beads_content, encoding='utf-8')
             print("  - CLAUDE.md (created)")

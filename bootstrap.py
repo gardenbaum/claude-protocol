@@ -823,7 +823,7 @@ def copy_settings_and_claude_md(project_dir: Path, project_name: str) -> None:
                     f.write(separator + beads_content)
                 print("  - CLAUDE.md (appended orchestration section)")
         else:
-            claude_dest.write_text(beads_content, encoding='utf-8')
+            claude_dest.write_text(f"{cp_marker}\n" + beads_content, encoding='utf-8')
             print("  - CLAUDE.md (created)")
 
     print("  DONE")

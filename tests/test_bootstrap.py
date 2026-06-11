@@ -1176,8 +1176,28 @@ class TestBdDoctorSoftFailure:
 # settings merge must preserve bd's own SessionStart hook
 # ============================================================================
 
+def _fake_templates_dir(root: Path) -> Path:
+    """Write a minimal templates/ dir (hermetic — independent of the real one)."""
+    templates = root / "fake_templates"
+    templates.mkdir(parents=True)
+    settings = {
+        "hooks": {"SessionStart": [
+            {"hooks": [{"command": "node .claude/hooks/session-start.cjs",
+                        "type": "command"}],
+             "matcher": ""}
+        ]}
+    }
+    (templates / "settings.json").write_text(json.dumps(settings))
+    (templates / "CLAUDE.md").write_text(
+        "# [Project]\n\nORCHESTRATION TEMPLATE BODY\n"
+    )
+    return templates
+
+
 class TestSettingsMergePreservesBdHook:
-    def test_bd_prime_hook_survives_merge(self, tmp_path):
+    def test_bd_prime_hook_survives_merge(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bootstrap, "TEMPLATES_DIR",
+                            _fake_templates_dir(tmp_path))
         # Simulate what `bd init` wrote first.
         settings_dir = tmp_path / ".claude"
         settings_dir.mkdir(parents=True)
@@ -1198,7 +1218,9 @@ class TestSettingsMergePreservesBdHook:
 
 
 class TestClaudeMdAppendIdempotent:
-    def test_orchestration_appended_once(self, tmp_path):
+    def test_orchestration_appended_once(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bootstrap, "TEMPLATES_DIR",
+                            _fake_templates_dir(tmp_path))
         (tmp_path / ".claude").mkdir()
         claude = tmp_path / "CLAUDE.md"
         claude.write_text("# Project\n\n<!-- BEGIN BEADS INTEGRATION -->\nbd block\n")
@@ -1209,3 +1231,19 @@ class TestClaudeMdAppendIdempotent:
         content = claude.read_text()
         assert content.count("<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->") == 1
         assert "<!-- BEGIN BEADS INTEGRATION -->" in content  # bd's block preserved
+        assert content.count("ORCHESTRATION TEMPLATE BODY") == 1  # body not duplicated
+
+    def test_create_path_idempotent(self, tmp_path, monkeypatch):
+        """No CLAUDE.md yet: create on first run, do not duplicate on the second."""
+        monkeypatch.setattr(bootstrap, "TEMPLATES_DIR",
+                            _fake_templates_dir(tmp_path))
+        (tmp_path / ".claude").mkdir()
+        claude = tmp_path / "CLAUDE.md"
+        assert not claude.exists()
+
+        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
+        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
+
+        content = claude.read_text()
+        assert content.count("<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->") == 1
+        assert content.count("ORCHESTRATION TEMPLATE BODY") == 1  # body not duplicated

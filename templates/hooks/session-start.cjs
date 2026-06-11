@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-// SessionStart: Show full task context for orchestrator
+// SessionStart: orchestration status only (dirty-main / merged-worktree / open PRs).
+// bd's own `bd prime --hook-json` SessionStart hook owns workflow context + beads.
 
 const fs = require('fs');
 const path = require('path');
@@ -89,51 +90,8 @@ runHook('session-start', () => {
     }
   }
 
-  output.push('');
-  output.push('## Task Status');
-  output.push('');
-
-  // Show in-progress beads
-  const inProgress = execCommand('bd', ['list', '--status', 'in_progress']);
-  if (inProgress) {
-    const lines = inProgress.split('\n').slice(0, 5).join('\n');
-    output.push('### In Progress (resume these):');
-    output.push(lines);
-    output.push('');
-  }
-
-  // Show ready (unblocked) beads
-  const ready = execCommand('bd', ['ready']);
-  if (ready) {
-    const lines = ready.split('\n').slice(0, 5).join('\n');
-    output.push('### Ready (no blockers):');
-    output.push(lines);
-    output.push('');
-  }
-
-  // Show blocked beads
-  const blocked = execCommand('bd', ['blocked']);
-  if (blocked) {
-    const lines = blocked.split('\n').slice(0, 3).join('\n');
-    output.push('### Blocked:');
-    output.push(lines);
-    output.push('');
-  }
-
-  // Show stale beads
-  const stale = execCommand('bd', ['stale', '--days', '3']);
-  if (stale) {
-    const lines = stale.split('\n').slice(0, 3).join('\n');
-    output.push('### Stale (no activity in 3 days):');
-    output.push(lines);
-    output.push('');
-  }
-
-  // If nothing found
-  if (!inProgress && !ready && !blocked && !stale) {
-    output.push('No active beads. Create one with: bd create "Task title" -d "Description"');
-  }
-
-  output.push('');
-  injectText(output.join('\n'));
+  // bd prime (bd's own SessionStart hook) injects workflow context + beads.
+  // Only emit our orchestration extras; stay silent if there is nothing to flag.
+  const body = output.join('\n').trim();
+  if (body) injectText(body + '\n');
 });

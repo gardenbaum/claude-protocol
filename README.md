@@ -257,7 +257,7 @@ Subagents are blocked from finishing unless:
 | Hook | Event | Enforcement |
 |------|-------|-------------|
 | enforce-branch-before-edit | PreToolUse (Edit/Write) | Blocks edits on main. Asks confirmation on feature branches with file name and change size. |
-| bash-guard | PreToolUse (Bash) | Blocks `--no-verify`. Requires description on `bd create`. Validates epic close (all children done, PR merged). |
+| bash-guard | PreToolUse (Bash) | Blocks `--no-verify` and raw `git worktree add`. Requires description on `bd create`. Validates epic close (all children done, PR merged). |
 | validate-completion | SubagentStop | Checks completion report, checklist, comment, worktree committed + pushed, verbosity. |
 | session-start | SessionStart | Surfaces tasks, merged PRs, ACTION REQUIRED reminders. |
 | nudge-claude-md-update | PreCompact | Reminds to update CLAUDE.md before context compaction. |

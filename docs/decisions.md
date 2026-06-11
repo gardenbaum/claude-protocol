@@ -118,13 +118,14 @@ Every decision made during the v2 → v3 rewrite. Context, alternatives, rationa
 **Decision:**
 - `open` → created
 - `in_progress` → work started
-- `inreview` → submitted for review (enforced by validate-completion hook)
-- `done` → closed
+- `done` → closed after merge
 
 **Enforcement:**
-- `inreview` on completion — hook blocks subagent if not set
-- `in_progress` on start — instruction only (no enforcement, bd doesn't store status history)
-- Close after merge — `session-start.cjs` shows ACTION REQUIRED for merged worktrees and beads in `inreview`
+- Completion report (format, checklist, comment, committed + pushed worktree) — `validate-completion.cjs` blocks the subagent if any is missing
+- Review signal — an `AWAITING REVIEW` comment; the bead stays `in_progress` until the user merges and closes it
+- Close after merge — `session-start.cjs` shows ACTION REQUIRED for merged worktrees whose bead is still open
+
+> Updated in v3.3.0: the obsolete `inreview` status was dropped — review is signalled by an `AWAITING REVIEW` comment, and the hook verifies the completion report rather than a status field.
 
 ### 3.5 Checklist verification on completion
 
@@ -163,15 +164,17 @@ Every decision made during the v2 → v3 rewrite. Context, alternatives, rationa
 
 ### 4.1 Recall before every investigation
 
-**Decision:** Before any investigation — mandatory `node .beads/memory/recall.cjs "keyword"`.
+**Decision:** Before any investigation — search prior learnings with `bd memories "<keywords>"`, and afterwards record root cause + fix with `bd remember`.
 
 **Why:** Without this, Claude re-solves problems that were already solved in previous sessions.
+
+> Updated in v3.3.0: the custom knowledge base (`recall.cjs`, `memory-capture.cjs`, `.beads/memory/knowledge.jsonl`) was removed in favour of bd's native `bd remember` / `bd memories`.
 
 ### 4.2 docs/issues/*.md — rejected
 
 **Discussed:** Creating a markdown note after each closed task.
 
-**Decision:** Not doing it. Beads + LEARNED comments + recall.cjs cover this without duplication.
+**Decision:** Not doing it. Beads + LEARNED comments + `bd memories` cover this without duplication.
 
 **Why:** `bd show {ID}` + `bd comments {ID}` already contain everything. Markdown = double work with no additional value for the agent.
 
@@ -223,7 +226,7 @@ Every decision made during the v2 → v3 rewrite. Context, alternatives, rationa
 | MCP Provider Delegator | Separate infrastructure for external providers, unnecessary |
 | Web Interface Guidelines, React Best Practices | Claude already knows these, just fills context |
 | Beads workflow injection (3 files) | Replaced by single `beads-workflow.md` in rules (auto-loaded) |
-| 19 bash hooks | Replaced by 8 Node.js hooks (cross-platform) |
+| 19 bash hooks | Replaced by cross-platform Node.js hooks |
 | `skills/subagents-discipline/` | Subagent rules work better via rules + hooks |
 | `templates/ui-constraints.md` | Specific to Apple/SwiftUI, not universal |
 | `scripts/postinstall.js` | Removed automatic installation on npm install |
@@ -237,13 +240,12 @@ Every decision made during the v2 → v3 rewrite. Context, alternatives, rationa
 npx claude-protocol init
   |
   +-- .beads/                    # Task database (Dolt/SQLite)
-  |   +-- memory/knowledge.jsonl # Knowledge base
   |
   +-- .claude/
   |   +-- agents/
   |   |   +-- code-reviewer.md   # Adversarial review (no persona)
   |   |   +-- merge-supervisor.md # Conflict resolution (no persona)
-  |   +-- hooks/                 # 8 Node.js enforcement hooks
+  |   +-- hooks/                 # 6 Node.js enforcement hooks
   |   +-- rules/
   |   |   +-- beads-workflow.md  # Auto-loaded: workflow + bd reference
   |   |   +-- [dev rules]

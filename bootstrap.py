@@ -829,16 +829,16 @@ def copy_settings_and_claude_md(project_dir: Path, project_name: str) -> None:
 
 
 def setup_gitignore(project_dir: Path) -> None:
-    """Ensure .worktrees/, .claude/.upgrades/, and /issues.jsonl are in .gitignore.
+    """Ensure .worktrees/ and .claude/.upgrades/ are in .gitignore.
 
-    NOTE: the beads tracker travels with the repo, so .beads/ is intentionally
-    NOT ignored — the canonical .beads/issues.jsonl must stay under git. Dolt
-    runtime/binary files are excluded by .beads/.gitignore (written by bd init).
-    /issues.jsonl guards against an export that lands at the repo root.
+    .beads/ is intentionally NOT ignored — the readable .beads/issues.jsonl
+    export must stay git-tracked as a backup (bd 1.0.5: opt-in export, no stray
+    root /issues.jsonl). Dolt runtime/binary files are excluded by
+    .beads/.gitignore (written by bd init).
     """
     print("\n[6/6] Setting up .gitignore...")
     gitignore_path = project_dir / ".gitignore"
-    entries = [".worktrees/", ".claude/.upgrades/", "/issues.jsonl"]
+    entries = [".worktrees/", ".claude/.upgrades/"]
 
     if gitignore_path.exists():
         content = gitignore_path.read_text(encoding='utf-8')
@@ -859,7 +859,7 @@ def setup_gitignore(project_dir: Path) -> None:
             print("  - Already configured")
     else:
         gitignore_path.write_text(
-            "# Beads orchestration\n.worktrees/\n.claude/.upgrades/\n/issues.jsonl\n",
+            "# Beads orchestration\n.worktrees/\n.claude/.upgrades/\n",
             encoding='utf-8',
         )
         print("  - Created .gitignore")

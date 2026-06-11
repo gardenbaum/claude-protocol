@@ -199,7 +199,6 @@ class TestSetupGitignore:
         assert gitignore.exists()
         content = gitignore.read_text()
         assert ".worktrees/" in content
-        assert "/issues.jsonl" in content
 
     def test_does_not_ignore_whole_beads_dir(self, tmp_path, capsys):
         """The tracker travels with the repo — .beads/ must NOT be ignored
@@ -210,12 +209,11 @@ class TestSetupGitignore:
         assert ".beads/" not in lines
         assert ".beads" not in lines
 
-    def test_ignores_root_issues_jsonl(self, tmp_path, capsys):
-        """A stray /issues.jsonl export at repo root must be ignored."""
+    def test_does_not_ignore_issues_jsonl(self, tmp_path, capsys):
+        """The readable .beads/issues.jsonl backup must stay git-tracked."""
         setup_gitignore(tmp_path)
-
         content = (tmp_path / ".gitignore").read_text()
-        assert "/issues.jsonl" in content
+        assert "issues.jsonl" not in content
 
     def test_appends_missing_entries(self, tmp_path, capsys):
         gitignore = tmp_path / ".gitignore"
@@ -227,20 +225,18 @@ class TestSetupGitignore:
         assert "node_modules/" in content
         assert ".env" in content
         assert ".worktrees/" in content
-        assert "/issues.jsonl" in content
 
     def test_skips_when_already_configured(self, tmp_path, capsys):
         gitignore = tmp_path / ".gitignore"
         gitignore.write_text(
-            "node_modules/\n.worktrees/\n.claude/.upgrades/\n/issues.jsonl\n"
+            "node_modules/\n.worktrees/\n.claude/.upgrades/\n"
         )
 
         setup_gitignore(tmp_path)
 
         content = gitignore.read_text()
-        # Should not duplicate entries
         assert content.count(".worktrees/") == 1
-        assert content.count("/issues.jsonl") == 1
+        assert content.count(".claude/.upgrades/") == 1
 
     def test_adds_newline_if_missing(self, tmp_path, capsys):
         gitignore = tmp_path / ".gitignore"
@@ -260,12 +256,11 @@ class TestSetupGitignore:
 
         content = (tmp_path / ".gitignore").read_text()
         assert content.count(".worktrees/") == 1
-        assert content.count("/issues.jsonl") == 1
         assert content.count(".claude/.upgrades/") == 1
 
     def test_detects_entries_without_trailing_slash(self, tmp_path, capsys):
         gitignore = tmp_path / ".gitignore"
-        gitignore.write_text(".worktrees\n.claude/.upgrades\n/issues.jsonl\n")
+        gitignore.write_text(".worktrees\n.claude/.upgrades\n")
 
         setup_gitignore(tmp_path)
 

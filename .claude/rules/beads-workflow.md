@@ -40,7 +40,7 @@ Rule of thumb: 1 bead = 1 PR = 1 reviewable diff.
 
 ### Status discipline:
 - Created → `open` (default)
-- Starting work → `bd update {ID} --status in_progress`
+- Starting work → `bd update {ID} --claim` (atomic: assigns to you + sets `in_progress`)
 - Submitted for review → `bd comments add {ID} "AWAITING REVIEW"` then leave bead at `in_progress` until user merges
 - Merged → `bd close {ID} --reason "merged in PR #N"` (the status becomes `closed`; `done` is a category, not a status). Other built-in statuses: `open`, `in_progress`, `blocked`, `deferred`.
 - **Epic status:** When starting work on the first child → `bd update {EPIC_ID} --status in_progress`. Epic stays `in_progress` until all children are done.
@@ -65,7 +65,7 @@ Don't try to fix it now (unless trivial). Create the bead so it's not forgotten.
 
    **The `local` label is normal.** `bd worktree list` shows `local` for the worktree (and `shared` for `(main)`); `bd worktree info` shows `local (no redirect)`. The database is still shared — `bd list` from inside the worktree sees the shared tasks. Do NOT treat `local` as breakage. (`none` would mean a worktree with no beads at all.)
 
-   **Protection against a stray `.beads/issues.jsonl` in the worktree** is `export.git-add false` plus `/issues.jsonl` in `.gitignore` (set up by bootstrap) — NOT a check of the worktree's shared status.
+   **Bead state from the worktree is shared and synced automatically.** Mutations write to the one shared `.beads` Dolt database; the committed git hooks (`bd hooks install --shared`) sync it on `git push`/`pull`, and `.beads/issues.jsonl` travels in commits as a readable backup. You never manage export or sync by hand.
 3. Claim the work (atomic assign + in_progress): `bd update {BEAD_ID} --claim`
 4. If this is a child of an epic — check epic status. If epic is still `open`, mark it too: `bd update {EPIC_ID} --status in_progress`
 5. Read bead context: `bd show {BEAD_ID}` and `bd comments {BEAD_ID}`

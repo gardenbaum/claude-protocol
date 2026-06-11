@@ -1,7 +1,7 @@
 {
   "name": "@gardenbaum/claude-protocol",
   "version": "3.4.3",
-  "description": "Fork of weselow/claude-protocol: enforcement-first orchestration for Claude Code with worktree-aware getRepoRoot fix.",
+  "description": "Enforcement-first orchestration for Claude Code: beads task tracking, worktree isolation, and hooks that survive context loss.",
   "license": "MIT",
   "homepage": "https://github.com/gardenbaum/claude-protocol#readme",
   "repository": {

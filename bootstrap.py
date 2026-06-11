@@ -647,7 +647,7 @@ def copy_rules_and_skills(
 
     rules_src_dir = TEMPLATES_DIR / "rules"
 
-    # Always copy beads workflow (always English — it's the canonical format)
+    # Always copy beads workflow (canonical rule — copied verbatim)
     beads_src = TEMPLATES_DIR / "rules" / "beads-workflow.md"
     if beads_src.exists():
         dest = rules_dir / "beads-workflow.md"

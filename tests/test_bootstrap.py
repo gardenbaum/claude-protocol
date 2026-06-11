@@ -14,7 +14,7 @@ from bootstrap import (
     infer_project_name,
     copy_and_replace,
     setup_gitignore,
-    configure_beads_export,
+    configure_beads_sync,
     _from_package_json,
     _from_pyproject,
     _from_cargo,
@@ -293,66 +293,52 @@ class TestSetupGitignore:
 
 
 # ============================================================================
-# configure_beads_export
+# configure_beads_sync
 # ============================================================================
 
-class TestConfigureBeadsExport:
-    def test_runs_bd_config_set_git_add_false(self, tmp_path, monkeypatch, capsys):
-        """Should call `bd config set export.git-add false` in the project dir."""
+class TestConfigureBeadsSync:
+    def _patch(self, monkeypatch, origin="git@github.com:o/r.git"):
         calls = []
-
         class FakeResult:
             returncode = 0
             stdout = ""
             stderr = ""
-
         def fake_run(cmd, **kwargs):
-            calls.append((cmd, kwargs.get("cwd")))
+            calls.append(cmd)
             return FakeResult()
-
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
         monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: origin)
+        return calls
 
-        result = configure_beads_export(tmp_path)
-
+    def test_enables_export_and_wires_sync(self, tmp_path, monkeypatch, capsys):
+        calls = self._patch(monkeypatch)
+        result = configure_beads_sync(tmp_path)
         assert result is True
-        assert calls == [
-            (["bd", "config", "set", "export.git-add", "false"], tmp_path)
-        ]
+        assert ["bd", "config", "set", "export.auto", "true"] in calls
+        assert ["bd", "config", "set", "export.git-add", "true"] in calls
+        assert ["bd", "dolt", "remote", "add", "origin", "git@github.com:o/r.git"] in calls
+        assert ["bd", "hooks", "install", "--shared"] in calls
+
+    def test_skips_dolt_remote_without_origin(self, tmp_path, monkeypatch, capsys):
+        calls = self._patch(monkeypatch, origin=None)
+        configure_beads_sync(tmp_path)
+        assert not any(c[:3] == ["bd", "dolt", "remote"] for c in calls)
+        # still installs shared hooks for local-only repos
+        assert ["bd", "hooks", "install", "--shared"] in calls
 
     def test_returns_false_when_bd_missing(self, tmp_path, monkeypatch, capsys):
-        """If bd is not on PATH, do not crash — return False."""
         monkeypatch.setattr(bootstrap.shutil, "which", lambda _: None)
-
-        result = configure_beads_export(tmp_path)
-
-        assert result is False
-
-    def test_does_not_raise_on_nonzero_exit(self, tmp_path, monkeypatch, capsys):
-        """A failing bd config must not raise — log and return False."""
-        class FakeResult:
-            returncode = 1
-            stdout = ""
-            stderr = "boom"
-
-        monkeypatch.setattr(bootstrap.subprocess, "run", lambda *a, **k: FakeResult())
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-
-        result = configure_beads_export(tmp_path)
-
-        assert result is False
+        assert configure_beads_sync(tmp_path) is False
 
     def test_does_not_raise_on_timeout(self, tmp_path, monkeypatch, capsys):
-        """A timeout must not raise — log and return False."""
         def fake_run(*a, **k):
             raise bootstrap.subprocess.TimeoutExpired(cmd="bd", timeout=15)
-
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
         monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-
-        result = configure_beads_export(tmp_path)
-
-        assert result is False
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
+        # must not raise
+        configure_beads_sync(tmp_path)
 
 
 # ============================================================================

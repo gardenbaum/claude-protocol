@@ -584,11 +584,9 @@ def install_beads(project_dir: Path) -> bool:
             (beads_dir / "issues.jsonl").touch()
             print("  - Created .beads manually (run 'bd init' later with Dolt server running)")
 
-    # Stop bd's pre-commit shim from force-staging issues.jsonl (bd >=1.0.2
-    # defaults export.git-add=true, which re-stages the JSONL on every commit
-    # and can drop a duplicate /issues.jsonl at the repo root). Best-effort:
-    # never fail the whole bootstrap on this.
-    configure_beads_export(project_dir)
+    # Wire automatic sync + readable git backup (bd 1.0.5: export.* default off,
+    # Dolt is the canonical store/sync). Best-effort; never fails the bootstrap.
+    configure_beads_sync(project_dir)
 
     print("  DONE")
     return True
@@ -630,35 +628,38 @@ def _git_origin_url(project_dir: Path) -> str | None:
     return url if result.returncode == 0 and url else None
 
 
-def configure_beads_export(project_dir: Path) -> bool:
-    """Disable bd's auto-staging of issues.jsonl (export.git-add=false).
+def configure_beads_sync(project_dir: Path) -> bool:
+    """Wire automatic team sync + readable git backup (best-effort, never raises).
 
-    Returns True on success. Never raises — if bd is missing or the command
-    fails/times out, logs a warning and returns False so bootstrap can continue.
+    - export.auto/git-add=true  → .beads/issues.jsonl rides in normal commits
+      (human-readable backup in the same git remote as the code).
+    - dolt remote 'origin'      → Dolt history is pushed/pulled under
+      refs/dolt/data on the code's existing origin (the canonical team sync).
+    - bd hooks install --shared → committed git hooks auto-sync Dolt on
+      push/pull, so the agent never has to run a manual sync command.
+
+    bd 1.0.5 defaults export.* to false; auto-export no longer drops a stray
+    /issues.jsonl in worktrees (verified), so enabling it is safe.
     """
     if not shutil.which("bd"):
-        print("  - bd not available, skipping export.git-add config "
-              "(run 'bd config set export.git-add false' later)")
+        print("  - bd not available, skipping sync config "
+              "(run sync setup later: bd hooks install --shared)")
         return False
-    try:
-        result = subprocess.run(
-            ["bd", "config", "set", "export.git-add", "false"],
-            cwd=project_dir, capture_output=True, text=True,
-            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
-        )
-    except subprocess.TimeoutExpired:
-        print("  - bd config set export.git-add timed out (Dolt server not running?)")
-        return False
-    except OSError as exc:
-        print(f"  - bd config set export.git-add failed to start: {exc}")
-        return False
-    if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "").strip()
-        print("  - WARNING: bd config set export.git-add false failed"
-              + (f": {detail}" if detail else ""))
-        return False
-    print("  - Set export.git-add=false (prevents duplicate /issues.jsonl)")
-    return True
+    ok = _run_bd(["config", "set", "export.auto", "true"], project_dir,
+                 "enable export.auto")
+    ok = _run_bd(["config", "set", "export.git-add", "true"], project_dir,
+                 "enable export.git-add") and ok
+    origin = _git_origin_url(project_dir)
+    if origin:
+        # Idempotent-ish: a pre-existing remote makes this a no-op warning.
+        _run_bd(["dolt", "remote", "add", "origin", origin], project_dir,
+                "add Dolt remote 'origin'")
+    else:
+        print("  - no git origin; Dolt sync stays local until a remote is added")
+    _run_bd(["hooks", "install", "--shared"], project_dir,
+            "install shared git hooks")
+    print("  - Sync configured (JSONL git-backup + Dolt remote + shared hooks)")
+    return ok
 
 
 def copy_agents(

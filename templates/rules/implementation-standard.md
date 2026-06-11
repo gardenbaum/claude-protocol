@@ -34,9 +34,27 @@
 2. Pick the simplest that works
 3. Avoid the first thing that comes to mind
 
+## Look Before You Code
+
+Before writing code against external data (API, DB, file, config): fetch/read the **actual** data first. Note the exact field names, types, and formats you *see* — not what docs or assumptions say — and code against that observed shape.
+
+Example: assuming a column is `reference_images` when it is actually `reference_image_url` fails at runtime. One `SELECT ... FROM information_schema.columns` first avoids it.
+
 ## Verification Cycle
 
-After each code block: lint → compile → test → run
+After each code block: lint → compile → test → run.
+
+**Close the loop — verify functionally with the fastest real check, not just unit tests:**
+
+| You built | Fastest verification |
+|-----------|----------------------|
+| API endpoint | `curl` it, check the response |
+| DB change | run the migration, query the result |
+| Frontend | load it in the browser, interact with it |
+| CLI tool | run the command, check the output |
+| Config | restart the service, verify behavior |
+
+Unit/component tests supplement this for regression-prone logic — they don't replace seeing it work.
 
 ## Self-review (after completing a task)
 

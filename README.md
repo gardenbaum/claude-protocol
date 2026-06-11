@@ -118,11 +118,10 @@ Use `--force` to overwrite all files regardless of modifications.
 
 Every time you start Claude Code, the `session-start` hook shows:
 
+- **bd `bd prime`** (bd's own hook) — beads workflow context, ready work, and persistent memories; re-injected after compaction
 - **ACTION REQUIRED** — merged worktrees with unclosed beads
-- **In Progress** — beads to resume
-- **Ready** — unblocked beads available for dispatch
-- **Blocked / Stale** — beads waiting on dependencies or inactive for 3+ days
 - **Open PRs** — your PRs awaiting review
+- **Dirty main** — warns if the main working tree has uncommitted changes
 
 No manual checking. Context is rebuilt automatically.
 
@@ -266,7 +265,7 @@ Subagents are blocked from finishing unless:
 | enforce-branch-before-edit | PreToolUse (Edit/Write) | Blocks edits on main. Asks confirmation on feature branches with file name and change size. |
 | bash-guard | PreToolUse (Bash) | Blocks `--no-verify` and raw `git worktree add`. Requires description on `bd create`. Validates epic close (all children done, PR merged). |
 | validate-completion | SubagentStop | Checks completion report, checklist, comment, worktree committed + pushed, verbosity. |
-| session-start | SessionStart | Surfaces tasks, merged PRs, ACTION REQUIRED reminders. |
+| session-start | SessionStart | Orchestration status: dirty-main warning, merged-worktree ACTION REQUIRED, open PRs. (bd's own `bd prime` hook injects beads workflow context.) |
 | nudge-claude-md-update | PreCompact | Reminds to update CLAUDE.md before context compaction. |
 | hook-utils | — | Shared utilities: getField, parseBeadId, deny/ask/block, execCommand. |
 
@@ -297,6 +296,12 @@ A: Modified rules and agents are preserved — new versions go to `.claude/.upgr
 
 **Q: Can I use this without Dolt?**
 A: Yes. Beads works with SQLite by default. Dolt adds version history and branching for the task database.
+
+**Q: How do beads sync across machines / get backed up?**
+A: `init` wires the Dolt remote to your `origin` and installs shared git hooks, so
+your normal `git push`/`git pull` syncs the bead database (Dolt history under
+`refs/dolt/data`). A readable `.beads/issues.jsonl` is also committed as a backup.
+On a fresh clone run `bd bootstrap` to pull the bead history.
 
 ## Credits
 

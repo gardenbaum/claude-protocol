@@ -257,3 +257,36 @@ npx claude-protocol init
 ```
 
 **Principle:** Minimum files, maximum enforcement. Constraints > Instructions. Beads = single source of truth.
+
+---
+
+## 8. bd 1.0.5 Realignment (2026-06-12)
+
+### 8.1 bd-native owns session context
+
+bd 1.0.5 `bd init` registers its own `SessionStart → bd prime --hook-json` hook
+and writes a CLAUDE.md beads block. claude-protocol no longer duplicates this:
+`session-start.cjs` was trimmed to orchestration-only (dirty-main, merged-worktree
+ACTION REQUIRED, open PRs), and CLAUDE.md/`beads-workflow.md` defer the beads
+basics to `bd prime`. claude-protocol keeps its differentiators: enforcement
+hooks, dev rules, worktree-per-bead orchestration, agents, safe install/upgrade.
+
+### 8.2 Sync reversal — Dolt remote + JSONL git-backup
+
+The v3 premise that `.beads/issues.jsonl` is the canonical git-tracked tracker
+(commit f00521e: `export.git-add false` + `/issues.jsonl` gitignore guard) is
+obsolete under bd 1.0.5. Verified facts: export.* default to false; Dolt is the
+canonical store (`dolt.auto-commit=on`) and the cross-machine sync channel;
+auto-export no longer strays into worktree roots.
+
+Bootstrap now wires, best-effort: `export.auto/git-add=true` (readable JSONL
+backup rides in commits), `bd dolt remote add origin <origin>` (sync under
+refs/dolt/data on the existing remote), and `bd hooks install --shared`
+(committed git hooks auto-sync Dolt on push/pull). Fresh clones run `bd bootstrap`.
+The `/issues.jsonl` gitignore guard is removed; `.beads/` stays tracked.
+
+### 8.3 Drift fixes verified against running bd 1.0.5
+
+Worktree label is `local` (not `none`); `bd worktree remove` works with safety
+checks (the "u51/Windows" claim was unsourced); `closed` is the status and `done`
+a category; the verbosity docstring now matches the enforced 25 lines / 1200 chars.

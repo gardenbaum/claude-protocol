@@ -154,7 +154,7 @@ function verifyChecklist(response, beadId) {
 /** Block if no bd comment found in agent transcript content. */
 function verifyComment(transcriptContent) {
   if (transcriptContent.includes('bd comment') || transcriptContent.includes('"command":"bd comment')) return;
-  block('Work verification failed: no comment on bead.\n\nRun: bd comment {BEAD_ID} "Completed: [summary]"');
+  block('Work verification failed: no comment on bead.\n\nRun: bd comments add {BEAD_ID} "Completed: [summary]"');
 }
 
 /** Block if worktree missing, has uncommitted changes, or branch not pushed. */
@@ -182,7 +182,7 @@ function verifyWorktree(beadId) {
   }
 }
 
-/** Block if response exceeds verbosity limits (15 lines / 800 chars). */
+/** Block if response exceeds verbosity limits (25 lines / 1200 chars). */
 function verifyVerbosity(response) {
   const lineCount = response.split('\n').length;
   const charCount = response.length;

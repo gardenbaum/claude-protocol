@@ -20,8 +20,10 @@ Usage:
 import os
 import sys
 import json
+import difflib
 import hashlib
 import shutil
+import tempfile
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -164,6 +166,13 @@ def file_sha256(path: Path) -> str:
     return f"sha256:{h.hexdigest()}"
 
 
+def bytes_sha256(data: bytes) -> str:
+    """Return hex SHA-256 digest of raw bytes (same scheme as file_sha256)."""
+    h = hashlib.sha256()
+    h.update(data)
+    return f"sha256:{h.hexdigest()}"
+
+
 def content_sha256(content: str) -> str:
     """Return hex SHA-256 digest of string content."""
     h = hashlib.sha256()
@@ -218,6 +227,102 @@ def save_upgrade(project_dir: Path, relative_path: str, content: str) -> None:
     dest = project_dir / ".claude" / ".upgrades" / relative_path
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(content, encoding="utf-8")
+
+
+class ChangeRecorder:
+    """Guarded writes: byte-exact backup, atomic replace, per-file diff.
+
+    Every overwriting write goes through put_file so nothing is replaced
+    without a recoverable backup under .claude/.upgrades/<ts>/overwritten/
+    and a recorded diff for the report. Owns the manifest and change list.
+    """
+
+    def __init__(self, project_dir, manifest=None, *,
+                 force=False, dry_run=False, no_diff=False, timestamp=None):
+        self.project_dir = Path(project_dir).resolve()
+        self.manifest = manifest if manifest is not None else {"files": {}}
+        self.manifest.setdefault("files", {})
+        self.force = force
+        self.dry_run = dry_run
+        self.no_diff = no_diff
+        self.timestamp = timestamp or _upgrade_timestamp()
+        self.changes = []
+        self._backup_created = False
+
+    @property
+    def backup_root(self):
+        return self.project_dir / ".claude" / ".upgrades" / self.timestamp
+
+    def _ensure_backup_dir(self):
+        root = self.backup_root / "overwritten"
+        if not self._backup_created:
+            root.mkdir(parents=True, exist_ok=True)
+            self._backup_created = True
+        return root
+
+    def _label(self, key, old_bytes):
+        recorded = self.manifest.get("files", {}).get(key)
+        if recorded is None:
+            return "unmanaged"
+        return "pristine" if bytes_sha256(old_bytes) == recorded else "locally-modified"
+
+    @staticmethod
+    def _diff_lines(old_bytes, new_bytes, key):
+        old = old_bytes.decode("utf-8", errors="replace").splitlines()
+        new = (new_bytes or b"").decode("utf-8", errors="replace").splitlines()
+        return list(difflib.unified_diff(old, new, fromfile=key, tofile=key, lineterm=""))
+
+    @staticmethod
+    def _counts(diff):
+        added = sum(1 for ln in diff if ln.startswith("+") and not ln.startswith("+++"))
+        removed = sum(1 for ln in diff if ln.startswith("-") and not ln.startswith("---"))
+        return added, removed
+
+    def _atomic_write(self, dest, data):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(dest.parent), prefix=".cp-tmp-")
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+            os.replace(tmp, dest)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+
+    def _do_backup(self, dest, old_bytes):
+        rel = dest.resolve().relative_to(self.project_dir)
+        path = self._ensure_backup_dir() / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(old_bytes)
+        return path
+
+    def put_file(self, dest, new_bytes, key, *, backup=True):
+        """Write new_bytes to dest with backup (if overwriting) + recorded diff.
+
+        backup=True  -> managed file: back up old content, track in manifest.
+        backup=False -> append/unmanaged file: no backup, no manifest entry.
+        Returns "new" | "unchanged" | "overwritten" | "appended".
+        """
+        dest = Path(dest)
+        old_bytes = dest.read_bytes() if dest.exists() else None
+        if old_bytes == new_bytes:
+            return "unchanged"
+        action = "new" if old_bytes is None else ("overwritten" if backup else "appended")
+        diff = self._diff_lines(old_bytes, new_bytes, key) if old_bytes is not None else []
+        added, removed = self._counts(diff)
+        label = self._label(key, old_bytes) if old_bytes is not None else None
+        backup_path = None
+        if old_bytes is not None and backup and not self.dry_run:
+            backup_path = self._do_backup(dest, old_bytes)
+        if not self.dry_run:
+            self._atomic_write(dest, new_bytes)
+            if backup:
+                self.manifest["files"][key] = bytes_sha256(new_bytes)
+        self.changes.append({"key": key, "action": action, "label": label,
+                             "added": added, "removed": removed,
+                             "diff": diff, "backup": backup_path})
+        return action
 
 
 # ============================================================================

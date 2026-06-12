@@ -1292,3 +1292,66 @@ class TestClaudeMdAppendIdempotent:
         content = claude.read_text()
         assert content.count("<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->") == 1
         assert content.count("ORCHESTRATION TEMPLATE BODY") == 1  # body not duplicated
+
+
+# ============================================================================
+# ChangeRecorder: backup + atomic write + diff
+# ============================================================================
+
+class TestChangeRecorder:
+    def _rec(self, tmp_path, **kw):
+        return bootstrap.ChangeRecorder(tmp_path, {"files": {}}, **kw)
+
+    def test_new_file_written_no_backup(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        action = rec.put_file(dest, b"hello\n", "hooks/x.cjs")
+        assert action == "new"
+        assert dest.read_bytes() == b"hello\n"
+        assert not (rec.backup_root / "overwritten").exists()
+
+    def test_unchanged_is_noop(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / "f.txt"
+        dest.write_bytes(b"same\n")
+        assert rec.put_file(dest, b"same\n", "f.txt") == "unchanged"
+        assert not (rec.backup_root).exists()
+
+    def test_overwrite_backs_up_byte_exact(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"old\r\nline\r\n")  # CRLF must be preserved in backup
+        rec.put_file(dest, b"new\n", "hooks/x.cjs")
+        backup = rec.backup_root / "overwritten" / ".claude" / "hooks" / "x.cjs"
+        assert backup.read_bytes() == b"old\r\nline\r\n"
+        assert dest.read_bytes() == b"new\n"
+
+    def test_label_pristine_vs_locally_modified(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "rules" / "r.md"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"shipped\n")
+        rec.manifest["files"]["rules/r.md"] = bootstrap.bytes_sha256(b"shipped\n")
+        rec.put_file(dest, b"v2\n", "rules/r.md")
+        assert rec.changes[-1]["label"] == "pristine"
+
+        dest.write_bytes(b"user edit\n")
+        rec.put_file(dest, b"v3\n", "rules/r.md")
+        assert rec.changes[-1]["label"] == "locally-modified"
+
+    def test_dry_run_writes_nothing(self, tmp_path):
+        rec = self._rec(tmp_path, dry_run=True)
+        dest = tmp_path / "f.txt"
+        dest.write_bytes(b"orig\n")
+        rec.put_file(dest, b"changed\n", "f.txt")
+        assert dest.read_bytes() == b"orig\n"
+        assert not rec.backup_root.exists()
+        assert rec.changes[-1]["action"] == "overwritten"  # still recorded for the report
+
+    def test_atomic_write_leaves_no_tmp(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "a.txt"
+        rec.put_file(dest, b"data\n", "a.txt")
+        leftovers = [p.name for p in dest.parent.iterdir() if p.name.startswith(".cp-tmp-")]
+        assert leftovers == []

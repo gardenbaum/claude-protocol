@@ -26,6 +26,7 @@ Options:
   --no-rules       Skip dev rules (implementation, logging, TDD)
   --force          Overwrite all files regardless of user modifications
   --dry-run        Preview changes without writing (upgrade only)
+  --no-diff        Suppress full per-file diffs (summary + backups still shown)
   --all <parent>   Batch upgrade: iterate subdirs of <parent> with .beads/ (upgrade only)
 
 Examples:

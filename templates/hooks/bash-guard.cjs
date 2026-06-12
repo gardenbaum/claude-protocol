@@ -47,8 +47,8 @@ runHook('bash-guard', () => {
       deny(
         'git worktree add is blocked — use `bd worktree create` instead.\n\n' +
         'Raw `git worktree add` creates a shadow .beads/ copy (process leak, data loss).\n' +
-        'For removing worktrees, raw `git worktree remove` is allowed ' +
-        '(bd worktree remove is broken on Windows, see u51).'
+        'To remove a worktree, prefer `bd worktree remove` (it has safety checks); ' +
+        'raw `git worktree remove` is a fallback.'
       );
     }
 

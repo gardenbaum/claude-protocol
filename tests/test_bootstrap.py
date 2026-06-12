@@ -1117,6 +1117,44 @@ class TestUpgradeFlag:
         assert exc.value.code == 0
         assert len(calls) == 1
 
+    def test_recorder_shares_upgrade_folder_with_cleanup(self, tmp_path, monkeypatch):
+        """Recoder + cleanup_obsolete must share .claude/.upgrades/<ts>/ so
+        both overwritten/ (recorder) and obsolete/ (cleanup) land in one
+        folder. Regression for the c18327a wiring."""
+        # Seed a manifest so upgrade path runs.
+        save_manifest(tmp_path, {"version": "3.0.0", "installed_at": "t", "files": {}})
+
+        captured: dict = {}
+
+        def capture_cleanup(project_dir, manifest, dry_run, timestamp=None):
+            captured["timestamp"] = timestamp
+            return {
+                "removed_files": [], "removed_dirs": [],
+                "stripped_settings_hooks": [], "stripped_local_patterns": [],
+                "removed_local_settings": False, "skipped_dirs": [],
+                "legacy_injected": [], "backups": [None],
+            }
+
+        monkeypatch.setattr(bootstrap, "cleanup_obsolete", capture_cleanup)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd: True)
+        monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
+        monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
+        monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
+        monkeypatch.setattr(bootstrap, "copy_settings_and_claude_md", lambda *a, **kw: None)
+        monkeypatch.setattr(bootstrap, "setup_gitignore", lambda *a, **kw: None)
+        monkeypatch.setattr(bootstrap, "run_bd_doctor", lambda *a, **kw: None)
+
+        bootstrap.bootstrap_project(
+            project_dir=tmp_path, project_name="P", with_rules=False,
+            force=False, upgrade=True, dry_run=True,
+        )
+
+        # Build a recorder for the same dir; the timestamp it picks must
+        # match what was passed to cleanup_obsolete.
+        rec = bootstrap.ChangeRecorder(tmp_path)
+        assert captured["timestamp"] == rec.timestamp
+        assert captured["timestamp"] is not None
+
 
 class TestAllFlag:
     def test_iterates_subdirs_with_beads(self, tmp_path, monkeypatch):

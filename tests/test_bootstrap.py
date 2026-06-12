@@ -1436,6 +1436,40 @@ class TestChangeRecorder:
         assert leftovers == []  # temp cleaned up
         assert rec.manifest["files"]["hooks/x.cjs"] == bootstrap.bytes_sha256(b"original\n")  # not mutated
 
+    def test_atomic_write_failure_records_attempt_with_backup(self, tmp_path, monkeypatch):
+        """When _do_backup succeeds but _atomic_write fails, the changes
+        list must still record the attempted overwrite with its backup
+        path so the user sees the audit trail in print_report.
+
+        Without this, RES-4: backup is on disk, manifest unchanged, but
+        no entry in recorder.changes → print_report is silent about it.
+        """
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"original\n")
+        rec.manifest["files"]["hooks/x.cjs"] = bootstrap.bytes_sha256(b"original\n")
+
+        def boom(_dest, _data):
+            raise OSError("disk full mid-write")
+        monkeypatch.setattr(rec, "_atomic_write", boom)
+
+        with pytest.raises(OSError):
+            rec.put_file(dest, b"new\n", "hooks/x.cjs")
+
+        # Original intact
+        assert dest.read_bytes() == b"original\n"
+        # Backup on disk
+        backup = rec.backup_root / "overwritten" / ".claude" / "hooks" / "x.cjs"
+        assert backup.read_bytes() == b"original\n"
+        # Manifest NOT mutated (write didn't succeed)
+        assert rec.manifest["files"]["hooks/x.cjs"] == bootstrap.bytes_sha256(b"original\n")
+        # And the change IS recorded so the user can see it failed
+        assert len(rec.changes) == 1
+        assert rec.changes[0]["action"] == "overwritten"
+        assert rec.changes[0]["backup"] == backup
+        assert rec.changes[0]["key"] == "hooks/x.cjs"
+
     def test_new_file_written_no_backup(self, tmp_path):
         rec = self._rec(tmp_path)
         dest = tmp_path / ".claude" / "hooks" / "x.cjs"

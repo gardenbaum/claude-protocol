@@ -364,13 +364,16 @@ class ChangeRecorder:
         backup_path = None
         if old_bytes is not None and backup and not self.dry_run:
             backup_path = self._do_backup(dest, old_bytes)
+        # Record the change BEFORE the atomic write so a write failure
+        # still leaves an audit trail in print_report — the backup on
+        # disk is otherwise invisible to the user.
+        self.changes.append({"key": key, "action": action, "label": label,
+                             "added": added, "removed": removed,
+                             "diff": diff, "backup": backup_path})
         if not self.dry_run:
             self._atomic_write(dest, new_bytes)
             if backup:
                 self.manifest["files"][key] = bytes_sha256(new_bytes)
-        self.changes.append({"key": key, "action": action, "label": label,
-                             "added": added, "removed": removed,
-                             "diff": diff, "backup": backup_path})
         return action
 
     @staticmethod

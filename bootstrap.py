@@ -891,66 +891,43 @@ def copy_hooks(recorder):
     print("  DONE")
 
 
-def copy_rules_and_skills(
-    project_dir: Path, with_rules: bool,
-    manifest: dict = None, force: bool = False,
-) -> list:
+def _copy_rule(recorder, rule_file, rules_dir):
+    """Copy one rule verbatim through the recorder; return [rel_key] if skipped."""
+    dest = rules_dir / rule_file.name
+    rel_key = f"rules/{rule_file.name}"
+    ok, reason = should_update_file(dest, rel_key, recorder.manifest, recorder.force)
+    if ok:
+        recorder.put_file(dest, rule_file.read_bytes(), rel_key)
+        suffix = f" ({reason})" if reason != "new" else ""
+        print(f"  - rules/{rule_file.name}{suffix}")
+        return []
+    save_upgrade(recorder.project_dir, rel_key, rule_file.read_text(encoding="utf-8"))
+    print(f"  - rules/{rule_file.name} (MODIFIED by user — skipped)")
+    print(f"    New version saved to: .claude/.upgrades/{rel_key}")
+    return [rel_key]
+
+
+def copy_rules_and_skills(recorder, with_rules):
     """Copy beads-workflow rule, project-discovery skill, and optional dev rules."""
     print("\n[4/6] Copying rules and skills...")
-    rules_dir = project_dir / ".claude" / "rules"
+    rules_dir = recorder.project_dir / ".claude" / "rules"
     rules_dir.mkdir(parents=True, exist_ok=True)
     skipped = []
-
     rules_src_dir = TEMPLATES_DIR / "rules"
 
-    # Always copy beads workflow (canonical rule — copied verbatim)
-    beads_src = TEMPLATES_DIR / "rules" / "beads-workflow.md"
+    beads_src = rules_src_dir / "beads-workflow.md"
     if beads_src.exists():
-        dest = rules_dir / "beads-workflow.md"
-        rel_key = "rules/beads-workflow.md"
-        ok, reason = should_update_file(dest, rel_key, manifest, force)
-        if ok:
-            shutil.copy2(beads_src, dest)
-            manifest["files"][rel_key] = file_sha256(dest)
-            print(f"  - rules/beads-workflow.md" + (f" ({reason})" if reason != "new" else ""))
-        else:
-            save_upgrade(project_dir, rel_key, beads_src.read_text(encoding="utf-8"))
-            skipped.append(rel_key)
-            print(f"  - rules/beads-workflow.md (MODIFIED by user — skipped)")
-            print(f"    New version saved to: .claude/.upgrades/{rel_key}")
-
+        skipped += _copy_rule(recorder, beads_src, rules_dir)
     if with_rules:
         for rule_file in rules_src_dir.glob("*.md"):
             if rule_file.name != "beads-workflow.md":
-                dest = rules_dir / rule_file.name
-                rel_key = f"rules/{rule_file.name}"
-                ok, reason = should_update_file(dest, rel_key, manifest, force)
-                if ok:
-                    shutil.copy2(rule_file, dest)
-                    manifest["files"][rel_key] = file_sha256(dest)
-                    suffix = f" ({reason})" if reason != "new" else ""
-                    print(f"  - rules/{rule_file.name}{suffix}")
-                else:
-                    save_upgrade(project_dir, rel_key, rule_file.read_text(encoding="utf-8"))
-                    skipped.append(rel_key)
-                    print(f"  - rules/{rule_file.name} (MODIFIED by user — skipped)")
-                    print(f"    New version saved to: .claude/.upgrades/{rel_key}")
+                skipped += _copy_rule(recorder, rule_file, rules_dir)
 
-    # Project discovery skill (always overwrite — our code)
-    skills_dir = project_dir / ".claude" / "skills"
     skill_src = TEMPLATES_DIR / "skills" / "project-discovery"
     if skill_src.exists():
-        dest = skills_dir / "project-discovery"
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(skill_src, dest)
-        # Record skill files in manifest
-        for skill_file in dest.rglob("*"):
-            if skill_file.is_file():
-                rel_key = str(skill_file.relative_to(project_dir / ".claude")).replace("\\", "/")
-                manifest["files"][rel_key] = file_sha256(skill_file)
+        dest = recorder.project_dir / ".claude" / "skills" / "project-discovery"
+        recorder.replace_tree(dest, skill_src, "skills/project-discovery")
         print("  - skills/project-discovery/")
-
     print("  DONE")
     return skipped
 

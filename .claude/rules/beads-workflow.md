@@ -85,7 +85,11 @@ Execute ALL steps in order:
    - Check every item/requirement from the description
    - If anything is missing — implement it now, don't skip
 2. `git add -A && git commit -m "..."`
-3. `git push origin bd-{BEAD_ID}`
+3. Push your branch **and** the bead database to origin:
+   ```bash
+   git push origin bd-{BEAD_ID}
+   bd dolt push   # sync the shared bead DB to origin — REQUIRED so reviewers/teammates and fresh clones see your beads (auto-push alone is only eventual). If rejected, run `bd dolt pull` then `bd dolt push`.
+   ```
 4. Leave completion comment: `bd comments add {BEAD_ID} "Completed: [summary]"`
 5. Signal review: `bd comments add {BEAD_ID} "AWAITING REVIEW"` — leave the bead at `in_progress`; the user closes it after merging the PR.
 6. Return completion report (checklist is MANDATORY — hook will block without it):

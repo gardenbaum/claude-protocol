@@ -285,10 +285,20 @@ remote), `bd dolt remote add origin <origin>` (the remote under refs/dolt/data
 on the existing origin), and `bd hooks install --shared`. `dolt.auto-push`
 defaults to false, so it must be set explicitly — without it a `git push` does
 NOT carry bead data and a fresh clone's `bd bootstrap` fails ("remote contains
-no Dolt data"). With it, bead writes auto-push to `refs/dolt/data` on origin
-while the committed post-merge hook pulls Dolt on `git pull`/merge. Fresh clones
-run `bd bootstrap`. The `/issues.jsonl` gitignore guard is removed; `.beads/`
-stays tracked.
+no Dolt data").
+
+Deterministic sync is an explicit `bd dolt push` at task completion, added to
+the `beads-workflow.md` Task Completion step. End-to-end verification showed the
+automatic-only path is eventually-consistent and races: a bead created and
+carried by a natural `git push` (with `dolt.auto-push=true` + shared hooks) did
+NOT reliably appear in an immediate fresh clone ("No issues found"), whereas an
+explicit `bd dolt push` ("Push complete") makes the bead visible to a fresh
+clone right away. This matches bd's own "Team workflow" guidance ("Push
+regularly — `bd dolt push` at session end"). `dolt.auto-push=true` and the
+committed post-merge hook (pull Dolt on `git pull`/merge) are supplementary and
+only eventual — they reduce, not eliminate, the need to push explicitly. Fresh
+clones run `bd bootstrap`. The `/issues.jsonl` gitignore guard is removed;
+`.beads/` stays tracked.
 
 ### 8.3 Drift fixes verified against running bd 1.0.5
 

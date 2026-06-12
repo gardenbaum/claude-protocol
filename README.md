@@ -298,11 +298,14 @@ A: Modified rules and agents are preserved — new versions go to `.claude/.upgr
 A: Yes. Beads works with SQLite by default. Dolt adds version history and branching for the task database.
 
 **Q: How do beads sync across machines / get backed up?**
-A: `init` wires the Dolt remote to your `origin`, sets `dolt.auto-push=true`, and
-installs shared git hooks. Bead writes auto-push to the Dolt remote (history under
-`refs/dolt/data` on origin), and the committed post-merge hook pulls Dolt on your
-normal `git pull`/merge. A readable `.beads/issues.jsonl` is also committed as a
-backup. On a fresh clone run `bd bootstrap` to pull the bead history.
+A: `init` wires the Dolt remote to your `origin` and installs shared git hooks. At
+task completion the agent runs `bd dolt push` (one prescribed step) to push the bead
+database (history under `refs/dolt/data` on origin) — this is the deterministic sync
+so reviewers and fresh clones see your beads. On the receiving side `git pull` fires
+the committed post-merge hook to pull Dolt; `dolt.auto-push=true` is also set but is
+only eventual, so the explicit `bd dolt push` is what guarantees delivery. A readable
+`.beads/issues.jsonl` is committed as a backup. On a fresh clone run `bd bootstrap` to
+pull the bead history.
 
 ## Credits
 

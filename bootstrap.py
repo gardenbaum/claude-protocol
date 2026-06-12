@@ -330,7 +330,7 @@ class ChangeRecorder:
         shutil.copytree(src_dir, dest_dir)
         for f in dest_dir.rglob("*"):
             if f.is_file():
-                key = str(f.relative_to(self.project_dir / ".claude")).replace("\\", "/")
+                key = str(f.resolve().relative_to(self.project_dir / ".claude")).replace("\\", "/")
                 self.manifest["files"][key] = file_sha256(f)
 
     def put_file(self, dest, new_bytes, key, *, backup=True):

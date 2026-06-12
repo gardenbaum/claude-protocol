@@ -159,25 +159,21 @@ def copy_and_replace(source: Path, dest: Path, replacements: dict) -> None:
 # MANIFEST (upgrade tracking)
 # ============================================================================
 
-def file_sha256(path: Path) -> str:
-    """Return hex SHA-256 digest of a file's contents."""
-    h = hashlib.sha256()
-    h.update(path.read_bytes())
-    return f"sha256:{h.hexdigest()}"
-
-
 def bytes_sha256(data: bytes) -> str:
-    """Return hex SHA-256 digest of raw bytes (same scheme as file_sha256)."""
+    """Return hex SHA-256 digest of raw bytes."""
     h = hashlib.sha256()
     h.update(data)
     return f"sha256:{h.hexdigest()}"
 
 
+def file_sha256(path: Path) -> str:
+    """Return hex SHA-256 digest of a file's contents."""
+    return bytes_sha256(path.read_bytes())
+
+
 def content_sha256(content: str) -> str:
     """Return hex SHA-256 digest of string content."""
-    h = hashlib.sha256()
-    h.update(content.encode("utf-8"))
-    return f"sha256:{h.hexdigest()}"
+    return bytes_sha256(content.encode("utf-8"))
 
 
 def load_manifest(project_dir: Path) -> dict:

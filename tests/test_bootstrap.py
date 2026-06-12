@@ -1316,6 +1316,7 @@ class TestChangeRecorder:
         dest.write_bytes(b"same\n")
         assert rec.put_file(dest, b"same\n", "f.txt") == "unchanged"
         assert not (rec.backup_root).exists()
+        assert rec.changes == []
 
     def test_overwrite_backs_up_byte_exact(self, tmp_path):
         rec = self._rec(tmp_path)
@@ -1355,3 +1356,13 @@ class TestChangeRecorder:
         rec.put_file(dest, b"data\n", "a.txt")
         leftovers = [p.name for p in dest.parent.iterdir() if p.name.startswith(".cp-tmp-")]
         assert leftovers == []
+
+    def test_append_mode_no_backup_no_manifest(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / "CLAUDE.md"
+        dest.write_bytes(b"existing\n")
+        action = rec.put_file(dest, b"existing\nappended\n", "CLAUDE.md", backup=False)
+        assert action == "appended"
+        assert dest.read_bytes() == b"existing\nappended\n"
+        assert not (rec.backup_root / "overwritten").exists()
+        assert "CLAUDE.md" not in rec.manifest["files"]

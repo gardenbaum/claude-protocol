@@ -340,6 +340,12 @@ class ChangeRecorder:
                 key = str(f.resolve().relative_to(self.project_dir / ".claude")).replace("\\", "/")
                 self.manifest["files"][key] = file_sha256(f)
 
+    @staticmethod
+    def _classify(old_bytes, new_bytes, backup):
+        if old_bytes is None:
+            return "new"
+        return "overwritten" if backup else "appended"
+
     def put_file(self, dest, new_bytes, key, *, backup=True):
         """Write new_bytes to dest with backup (if overwriting) + recorded diff.
 
@@ -351,7 +357,7 @@ class ChangeRecorder:
         old_bytes = dest.read_bytes() if dest.exists() else None
         if old_bytes == new_bytes:
             return "unchanged"
-        action = "new" if old_bytes is None else ("overwritten" if backup else "appended")
+        action = self._classify(old_bytes, new_bytes, backup)
         diff = self._diff_lines(old_bytes, new_bytes, key) if old_bytes is not None else []
         added, removed = self._counts(diff)
         label = self._label(key, old_bytes) if old_bytes is not None else None
@@ -373,6 +379,13 @@ class ChangeRecorder:
         counts = "" if c["action"] == "new" else f"  +{c['added']} -{c['removed']}"
         return f"  {c['action']:<12} {c['key']}{label}{counts}"
 
+    def _print_diffs(self, changed):
+        for c in changed:
+            if c["diff"]:
+                print("")
+                for line in c["diff"]:
+                    print(line)
+
     def print_report(self):
         changed = [c for c in self.changes if c["action"] != "unchanged"]
         tally = {}
@@ -385,11 +398,7 @@ class ChangeRecorder:
         for c in changed:
             print(self._summary_line(c))
         if not self.no_diff:
-            for c in changed:
-                if c["diff"]:
-                    print("")
-                    for line in c["diff"]:
-                        print(line)
+            self._print_diffs(changed)
 
 
 # ============================================================================

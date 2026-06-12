@@ -328,6 +328,9 @@ class ChangeRecorder:
         if dest_dir.exists():
             shutil.rmtree(dest_dir)
         shutil.copytree(src_dir, dest_dir)
+        prefix = key_prefix.rstrip("/") + "/"
+        for k in [k for k in self.manifest["files"] if k.startswith(prefix)]:
+            self.manifest["files"].pop(k)
         for f in dest_dir.rglob("*"):
             if f.is_file():
                 key = str(f.resolve().relative_to(self.project_dir / ".claude")).replace("\\", "/")

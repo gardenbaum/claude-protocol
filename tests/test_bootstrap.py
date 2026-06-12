@@ -1394,3 +1394,36 @@ class TestChangeRecorder:
         rec.replace_tree(dest, src, "skills/project-discovery")
         assert (dest / "SKILL.md").read_bytes() == b"fresh\n"
         assert rec.changes[-1]["action"] == "new"
+
+    def test_replace_tree_dry_run_no_disk_changes(self, tmp_path):
+        rec = self._rec(tmp_path, dry_run=True)
+        dest = tmp_path / ".claude" / "skills" / "project-discovery"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_bytes(b"keep\n")
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "SKILL.md").write_bytes(b"new\n")
+        rec.replace_tree(dest, src, "skills/project-discovery")
+        assert (dest / "SKILL.md").read_bytes() == b"keep\n"   # not replaced
+        assert not rec.backup_root.exists()
+        assert rec.changes[-1]["action"] == "overwritten"       # still recorded
+
+    def test_replace_tree_removed_file_backed_up_and_dekeyed(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "skills" / "project-discovery"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_bytes(b"keep\n")
+        (dest / "OLD.md").write_bytes(b"gone\n")
+        rec.manifest["files"]["skills/project-discovery/OLD.md"] = "sha256:stale"
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "SKILL.md").write_bytes(b"keep2\n")
+        rec.replace_tree(dest, src, "skills/project-discovery")
+        assert not (dest / "OLD.md").exists()
+        removed = [c for c in rec.changes if c["key"].endswith("OLD.md")][0]
+        assert removed["action"] == "removed"
+        backup = (rec.backup_root / "overwritten" / ".claude" / "skills"
+                  / "project-discovery" / "OLD.md")
+        assert backup.read_bytes() == b"gone\n"
+        assert "skills/project-discovery/OLD.md" not in rec.manifest["files"]
+        assert "skills/project-discovery/SKILL.md" in rec.manifest["files"]

@@ -312,6 +312,7 @@ class TestConfigureBeadsSync:
         assert result is True
         assert ["bd", "config", "set", "export.auto", "true"] in calls
         assert ["bd", "config", "set", "export.git-add", "true"] in calls
+        assert ["bd", "config", "set", "dolt.auto-push", "true"] in calls
         assert ["bd", "dolt", "remote", "add", "origin", "git@github.com:o/r.git"] in calls
         assert ["bd", "hooks", "install", "--shared"] in calls
 

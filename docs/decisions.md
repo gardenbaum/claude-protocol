@@ -280,10 +280,15 @@ canonical store (`dolt.auto-commit=on`) and the cross-machine sync channel;
 auto-export no longer strays into worktree roots.
 
 Bootstrap now wires, best-effort: `export.auto/git-add=true` (readable JSONL
-backup rides in commits), `bd dolt remote add origin <origin>` (sync under
-refs/dolt/data on the existing remote), and `bd hooks install --shared`
-(committed git hooks auto-sync Dolt on push/pull). Fresh clones run `bd bootstrap`.
-The `/issues.jsonl` gitignore guard is removed; `.beads/` stays tracked.
+backup rides in commits), `dolt.auto-push=true` (writes propagate to the Dolt
+remote), `bd dolt remote add origin <origin>` (the remote under refs/dolt/data
+on the existing origin), and `bd hooks install --shared`. `dolt.auto-push`
+defaults to false, so it must be set explicitly — without it a `git push` does
+NOT carry bead data and a fresh clone's `bd bootstrap` fails ("remote contains
+no Dolt data"). With it, bead writes auto-push to `refs/dolt/data` on origin
+while the committed post-merge hook pulls Dolt on `git pull`/merge. Fresh clones
+run `bd bootstrap`. The `/issues.jsonl` gitignore guard is removed; `.beads/`
+stays tracked.
 
 ### 8.3 Drift fixes verified against running bd 1.0.5
 

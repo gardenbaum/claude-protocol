@@ -632,10 +632,8 @@ def _git_origin_url(project_dir: Path) -> str | None:
 def configure_beads_sync(project_dir: Path) -> bool:
     """Wire automatic team sync + readable git backup (best-effort, never raises).
 
-    Enables export.auto/git-add (readable .beads/issues.jsonl rides in commits),
-    adds a Dolt remote on the git origin (sync under refs/dolt/data), and installs
-    shared git hooks that auto-sync Dolt on push/pull. bd 1.0.5 defaults export.*
-    to false and no longer strays /issues.jsonl into worktrees, so this is safe.
+    export.* commits readable .beads/issues.jsonl; dolt.auto-push pushes bead
+    writes to refs/dolt/data on origin; shared hooks pull on merge — sync loop.
     """
     if not shutil.which("bd"):
         print("  - bd not available, skipping sync config "
@@ -645,6 +643,8 @@ def configure_beads_sync(project_dir: Path) -> bool:
                  "enable export.auto")
     ok = _run_bd(["config", "set", "export.git-add", "true"], project_dir,
                  "enable export.git-add") and ok
+    ok = _run_bd(["config", "set", "dolt.auto-push", "true"], project_dir,
+                 "enable dolt.auto-push") and ok
     origin = _git_origin_url(project_dir)
     if origin:
         # Idempotent-ish: a pre-existing remote makes this a no-op warning.

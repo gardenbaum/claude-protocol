@@ -1439,7 +1439,7 @@ class TestChangeRecorder:
         assert "[CHANGES]" in out
         assert "overwritten" in out
         assert "hooks/x.cjs" in out
-        assert "-line2" in out and "+CHANGED" in out  # full diff present
+        assert "\n-line2\n" in out and "\n+CHANGED\n" in out  # full diff present
 
     def test_report_no_diff_suppresses_full_diff(self, tmp_path, capsys):
         rec = self._rec(tmp_path, no_diff=True)
@@ -1458,3 +1458,14 @@ class TestChangeRecorder:
         out = capsys.readouterr().out
         assert "[CHANGES]" in out
         assert "no changes" in out
+
+    def test_report_dry_run_prefix(self, tmp_path, capsys):
+        rec = self._rec(tmp_path, dry_run=True)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"a\n")
+        rec.put_file(dest, b"b\n", "hooks/x.cjs")
+        rec.print_report()
+        out = capsys.readouterr().out
+        assert "[DRY-RUN] [CHANGES]" in out
+        assert "backup: (none)" in out  # nothing backed up in dry-run

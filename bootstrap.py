@@ -1078,7 +1078,7 @@ def _print_cleanup_report(report: dict, dry_run: bool) -> None:
 
 def bootstrap_project(
     project_dir: Path, project_name: str | None, with_rules: bool,
-    force: bool, upgrade: bool, dry_run: bool,
+    force: bool, upgrade: bool, dry_run: bool, no_diff: bool = False,
 ) -> int:
     """Run bootstrap for a single project. Returns exit code (0 = success)."""
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -1097,18 +1097,19 @@ def bootstrap_project(
         return 1
 
     manifest = load_manifest(project_dir)
+    recorder = ChangeRecorder(project_dir, manifest, force=force,
+                              dry_run=dry_run, no_diff=no_diff)
     all_skipped = []
 
     if not install_beads(project_dir):
         return 1
 
-    all_skipped += copy_agents(project_dir, resolved_name, manifest, force)
-    copy_hooks(project_dir, manifest)
-    all_skipped += copy_rules_and_skills(
-        project_dir, with_rules, manifest, force,
-    )
-    copy_settings_and_claude_md(project_dir, resolved_name)
+    all_skipped += copy_agents(recorder, resolved_name)
+    copy_hooks(recorder)
+    all_skipped += copy_rules_and_skills(recorder, with_rules)
+    copy_settings_and_claude_md(recorder, resolved_name)
     setup_gitignore(project_dir)
+    recorder.print_report()
 
     # Read version from package.json (same package as bootstrap.py)
     pkg_json = SCRIPT_DIR / "package.json"
@@ -1158,7 +1159,7 @@ Next steps:
 
 
 def run_batch_upgrade(
-    parent_dir: Path, with_rules: bool, force: bool, dry_run: bool,
+    parent_dir: Path, with_rules: bool, force: bool, dry_run: bool, no_diff: bool = False,
 ) -> int:
     """Iterate direct subdirs of parent_dir that contain .beads/ and upgrade each."""
     if not parent_dir.exists() or not parent_dir.is_dir():
@@ -1178,7 +1179,7 @@ def run_batch_upgrade(
         try:
             rc = bootstrap_project(
                 project_dir=child, project_name=None, with_rules=with_rules,
-                force=force, upgrade=True, dry_run=dry_run,
+                force=force, upgrade=True, dry_run=dry_run, no_diff=no_diff,
             )
             if rc == 0:
                 upgraded += 1
@@ -1205,6 +1206,7 @@ def main():
     parser.add_argument("--force", action="store_true", help="Overwrite all files regardless of user modifications")
     parser.add_argument("--upgrade", action="store_true", help="Run init flow then cleanup obsolete items (uses existing manifest)")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without writing anything")
+    parser.add_argument("--no-diff", action="store_true", help="Suppress full per-file diffs (summary + backups still shown)")
     parser.add_argument("--all", dest="all_parent", default=None, metavar="PARENT_DIR", help="Batch upgrade: iterate direct subdirs of PARENT_DIR that contain .beads/. Implies --upgrade.")
     args = parser.parse_args()
 
@@ -1212,14 +1214,14 @@ def main():
         parent = Path(args.all_parent).resolve()
         sys.exit(run_batch_upgrade(
             parent_dir=parent, with_rules=args.with_rules,
-            force=args.force, dry_run=args.dry_run,
+            force=args.force, dry_run=args.dry_run, no_diff=args.no_diff,
         ))
 
     project_dir = Path(args.project_dir).resolve()
     sys.exit(bootstrap_project(
         project_dir=project_dir, project_name=args.project_name,
         with_rules=args.with_rules, force=args.force,
-        upgrade=args.upgrade, dry_run=args.dry_run,
+        upgrade=args.upgrade, dry_run=args.dry_run, no_diff=args.no_diff,
     ))
 
 

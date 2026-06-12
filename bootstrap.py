@@ -609,7 +609,7 @@ def _cleanup_settings(settings_path: Path, patterns: list,
     return stripped
 
 
-def cleanup_obsolete(project_dir: Path, manifest: dict, dry_run: bool) -> dict:
+def cleanup_obsolete(project_dir: Path, manifest: dict, dry_run: bool, timestamp: str = None) -> dict:
     """Remove obsolete files/dirs and strip obsolete settings hook entries.
 
     Safety rules:
@@ -631,7 +631,7 @@ def cleanup_obsolete(project_dir: Path, manifest: dict, dry_run: bool) -> dict:
         "backups": [None],
     }
 
-    upgrades_root = project_dir / ".claude" / ".upgrades" / _upgrade_timestamp()
+    upgrades_root = project_dir / ".claude" / ".upgrades" / (timestamp or _upgrade_timestamp())
     obsolete_backup = upgrades_root / "obsolete"
     state = {"created": False}
 
@@ -1124,7 +1124,7 @@ def bootstrap_project(
     # Legacy installs without manifest are handled by _auto_inject_legacy_files
     # inside cleanup_obsolete — the OBSOLETE_* paths are dev-controlled and safe.
     if upgrade:
-        report = cleanup_obsolete(project_dir, manifest, dry_run)
+        report = cleanup_obsolete(project_dir, manifest, dry_run, timestamp=recorder.timestamp)
         _print_cleanup_report(report, dry_run)
 
     manifest["version"] = pkg_version

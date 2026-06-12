@@ -1063,7 +1063,7 @@ class TestUpgradeFlag:
 
         calls = []
 
-        def fake_cleanup(project_dir, manifest, dry_run):
+        def fake_cleanup(project_dir, manifest, dry_run, timestamp=None):
             calls.append({"project_dir": project_dir, "dry_run": dry_run})
             return {
                 "removed_files": [], "removed_dirs": [],

@@ -147,12 +147,16 @@ def _from_go_mod(project_dir: Path) -> str | None:
 # HELPERS
 # ============================================================================
 
-def copy_and_replace(source: Path, dest: Path, replacements: dict) -> None:
+def _render(source: Path, replacements: dict) -> str:
     content = source.read_text(encoding='utf-8')
     for placeholder, value in replacements.items():
         content = content.replace(placeholder, value)
+    return content
+
+
+def copy_and_replace(source: Path, dest: Path, replacements: dict) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_text(content, encoding='utf-8')
+    dest.write_text(_render(source, replacements), encoding='utf-8')
 
 
 # ============================================================================
@@ -851,31 +855,23 @@ def configure_beads_sync(project_dir: Path) -> bool:
     return ok
 
 
-def copy_agents(
-    project_dir: Path, project_name: str,
-    manifest: dict, force: bool = False,
-) -> list:
+def copy_agents(recorder, project_name):
     """Copy code-reviewer and merge-supervisor templates."""
     print("\n[2/6] Copying agents...")
-    agents_dir = project_dir / ".claude" / "agents"
+    agents_dir = recorder.project_dir / ".claude" / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
     skipped = []
-
     replacements = {"[Project]": project_name}
     for agent_file in (TEMPLATES_DIR / "agents").glob("*.md"):
         dest = agents_dir / agent_file.name
         rel_key = f"agents/{agent_file.name}"
-        ok, reason = should_update_file(dest, rel_key, manifest, force)
+        ok, reason = should_update_file(dest, rel_key, recorder.manifest, recorder.force)
+        new_content = _render(agent_file, replacements)
         if ok:
-            copy_and_replace(agent_file, dest, replacements)
-            manifest["files"][rel_key] = file_sha256(dest)
+            recorder.put_file(dest, new_content.encode("utf-8"), rel_key)
             print(f"  - {agent_file.name}" + (f" ({reason})" if reason != "new" else ""))
         else:
-            # Save new version to .upgrades/
-            new_content = agent_file.read_text(encoding="utf-8")
-            for placeholder, value in replacements.items():
-                new_content = new_content.replace(placeholder, value)
-            save_upgrade(project_dir, rel_key, new_content)
+            save_upgrade(recorder.project_dir, rel_key, new_content)
             skipped.append(rel_key)
             print(f"  - {agent_file.name} (MODIFIED by user — skipped)")
             print(f"    New version saved to: .claude/.upgrades/{rel_key}")
@@ -883,17 +879,14 @@ def copy_agents(
     return skipped
 
 
-def copy_hooks(project_dir: Path, manifest: dict) -> None:
-    """Copy Node.js hooks (always overwrite — enforcement code)."""
+def copy_hooks(recorder):
+    """Copy Node.js hooks (always overwrite — enforcement code), with backup + diff."""
     print("\n[3/6] Copying hooks...")
-    hooks_dir = project_dir / ".claude" / "hooks"
+    hooks_dir = recorder.project_dir / ".claude" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
-
     for hook_file in (TEMPLATES_DIR / "hooks").glob("*.cjs"):
         dest = hooks_dir / hook_file.name
-        shutil.copy2(hook_file, dest)
-        rel_key = f"hooks/{hook_file.name}"
-        manifest["files"][rel_key] = file_sha256(dest)
+        recorder.put_file(dest, hook_file.read_bytes(), f"hooks/{hook_file.name}")
         print(f"  - {hook_file.name}")
     print("  DONE")
 

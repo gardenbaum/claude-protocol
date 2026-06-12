@@ -932,60 +932,73 @@ def copy_rules_and_skills(recorder, with_rules):
     return skipped
 
 
-def copy_settings_and_claude_md(project_dir: Path, project_name: str) -> None:
-    """Copy settings.json (merge hooks) and CLAUDE.md (append if exists)."""
-    print("\n[5/6] Copying settings and CLAUDE.md...")
+def _json_bytes(data: dict) -> bytes:
+    return (json.dumps(data, indent=2) + "\n").encode("utf-8")
 
-    # --- settings.json: merge hooks into existing ---
-    settings_dest = project_dir / ".claude" / "settings.json"
+
+def _merge_settings(existing: dict, new_settings: dict) -> dict:
+    """Merge new hooks into existing by event, skipping commands already present."""
+    for event, hooks_list in new_settings.get("hooks", {}).items():
+        existing.setdefault("hooks", {}).setdefault(event, [])
+        existing_commands = {
+            h["hooks"][0]["command"]
+            for h in existing["hooks"][event]
+            if h.get("hooks") and h["hooks"][0].get("command")
+        }
+        for hook in hooks_list:
+            cmd = hook.get("hooks", [{}])[0].get("command", "")
+            if cmd not in existing_commands:
+                existing["hooks"][event].append(hook)
+    return existing
+
+
+def _write_settings(recorder):
+    settings_dest = recorder.project_dir / ".claude" / "settings.json"
     settings_src = TEMPLATES_DIR / "settings.json"
-    if settings_src.exists():
-        new_settings = json.loads(settings_src.read_text(encoding='utf-8'))
-        if settings_dest.exists():
-            try:
-                existing = json.loads(settings_dest.read_text(encoding='utf-8'))
-                # Merge hooks by event type
-                for event, hooks_list in new_settings.get("hooks", {}).items():
-                    existing.setdefault("hooks", {}).setdefault(event, [])
-                    existing_commands = {
-                        h["hooks"][0]["command"]
-                        for h in existing["hooks"][event]
-                        if h.get("hooks") and h["hooks"][0].get("command")
-                    }
-                    for hook in hooks_list:
-                        cmd = hook.get("hooks", [{}])[0].get("command", "")
-                        if cmd not in existing_commands:
-                            existing["hooks"][event].append(hook)
-                settings_dest.write_text(json.dumps(existing, indent=2) + "\n", encoding='utf-8')
-                print("  - settings.json (merged hooks)")
-            except Exception:
-                shutil.copy2(settings_src, settings_dest)
-                print("  - settings.json (replaced — could not merge)")
-        else:
-            settings_dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(settings_src, settings_dest)
-            print("  - settings.json")
+    if not settings_src.exists():
+        return
+    new_settings = json.loads(settings_src.read_text(encoding="utf-8"))
+    if not settings_dest.exists():
+        recorder.put_file(settings_dest, _json_bytes(new_settings), "settings.json")
+        print("  - settings.json")
+        return
+    try:
+        merged = _merge_settings(
+            json.loads(settings_dest.read_text(encoding="utf-8")), new_settings
+        )
+        recorder.put_file(settings_dest, _json_bytes(merged), "settings.json")
+        print("  - settings.json (merged hooks)")
+    except Exception:
+        recorder.put_file(settings_dest, _json_bytes(new_settings), "settings.json")
+        print("  - settings.json (replaced — could not merge)")
 
-    # --- CLAUDE.md: append beads section if file exists ---
-    claude_dest = project_dir / "CLAUDE.md"
+
+def _write_claude_md(recorder, project_name):
+    claude_dest = recorder.project_dir / "CLAUDE.md"
     claude_src = TEMPLATES_DIR / "CLAUDE.md"
-    if claude_src.exists():
-        beads_content = claude_src.read_text(encoding='utf-8').replace("[Project]", project_name)
-        cp_marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
-        if claude_dest.exists():
-            existing_content = claude_dest.read_text(encoding='utf-8')
-            if cp_marker in existing_content:
-                print("  - CLAUDE.md (orchestration section present, skipped)")
-            else:
-                # Coexist with bd's own beads block — append after it.
-                separator = f"\n\n---\n\n{cp_marker}\n"
-                with open(claude_dest, "a", encoding="utf-8") as f:
-                    f.write(separator + beads_content)
-                print("  - CLAUDE.md (appended orchestration section)")
-        else:
-            claude_dest.write_text(f"{cp_marker}\n" + beads_content, encoding='utf-8')
-            print("  - CLAUDE.md (created)")
+    if not claude_src.exists():
+        return
+    body = claude_src.read_text(encoding="utf-8").replace("[Project]", project_name)
+    marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
+    if not claude_dest.exists():
+        recorder.put_file(claude_dest, (f"{marker}\n" + body).encode("utf-8"),
+                          "CLAUDE.md", backup=False)
+        print("  - CLAUDE.md (created)")
+        return
+    existing = claude_dest.read_text(encoding="utf-8")
+    if marker in existing:
+        print("  - CLAUDE.md (orchestration section present, skipped)")
+        return
+    new_content = existing + f"\n\n---\n\n{marker}\n" + body
+    recorder.put_file(claude_dest, new_content.encode("utf-8"), "CLAUDE.md", backup=False)
+    print("  - CLAUDE.md (appended orchestration section)")
 
+
+def copy_settings_and_claude_md(recorder, project_name):
+    """Write settings.json (merge hooks) and CLAUDE.md (append if exists)."""
+    print("\n[5/6] Copying settings and CLAUDE.md...")
+    _write_settings(recorder)
+    _write_claude_md(recorder, project_name)
     print("  DONE")
 
 

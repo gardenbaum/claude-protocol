@@ -1254,7 +1254,7 @@ class TestSettingsMergePreservesBdHook:
         }
         (settings_dir / "settings.json").write_text(json.dumps(bd_settings))
 
-        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
+        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
 
         merged = json.loads((settings_dir / "settings.json").read_text())
         cmds = [h["hooks"][0]["command"] for h in merged["hooks"]["SessionStart"]]
@@ -1270,8 +1270,8 @@ class TestClaudeMdAppendIdempotent:
         claude = tmp_path / "CLAUDE.md"
         claude.write_text("# Project\n\n<!-- BEGIN BEADS INTEGRATION -->\nbd block\n")
 
-        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
-        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
+        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
+        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
 
         content = claude.read_text()
         assert content.count("<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->") == 1
@@ -1286,8 +1286,8 @@ class TestClaudeMdAppendIdempotent:
         claude = tmp_path / "CLAUDE.md"
         assert not claude.exists()
 
-        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
-        bootstrap.copy_settings_and_claude_md(tmp_path, "Proj")
+        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
+        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
 
         content = claude.read_text()
         assert content.count("<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->") == 1

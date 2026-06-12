@@ -1366,3 +1366,31 @@ class TestChangeRecorder:
         assert dest.read_bytes() == b"existing\nappended\n"
         assert not (rec.backup_root / "overwritten").exists()
         assert "CLAUDE.md" not in rec.manifest["files"]
+
+    def test_replace_tree_backs_up_changed_file(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "skills" / "project-discovery"
+        dest.mkdir(parents=True)
+        (dest / "SKILL.md").write_bytes(b"old skill\n")
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "SKILL.md").write_bytes(b"new skill\n")
+
+        rec.replace_tree(dest, src, "skills/project-discovery")
+
+        assert (dest / "SKILL.md").read_bytes() == b"new skill\n"
+        backup = (rec.backup_root / "overwritten" / ".claude" / "skills"
+                  / "project-discovery" / "SKILL.md")
+        assert backup.read_bytes() == b"old skill\n"
+        actions = {c["key"]: c["action"] for c in rec.changes}
+        assert actions["skills/project-discovery/SKILL.md"] == "overwritten"
+
+    def test_replace_tree_records_new_when_no_dest(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "skills" / "project-discovery"
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "SKILL.md").write_bytes(b"fresh\n")
+        rec.replace_tree(dest, src, "skills/project-discovery")
+        assert (dest / "SKILL.md").read_bytes() == b"fresh\n"
+        assert rec.changes[-1]["action"] == "new"

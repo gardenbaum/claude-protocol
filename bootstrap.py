@@ -293,6 +293,46 @@ class ChangeRecorder:
         path.write_bytes(old_bytes)
         return path
 
+    def _record_tree_file(self, dest, key, old_b, new_b):
+        if old_b == new_b:
+            return
+        if old_b is None:
+            self.changes.append({"key": key, "action": "new", "label": None,
+                                 "added": 0, "removed": 0, "diff": [], "backup": None})
+            return
+        action = "removed" if new_b is None else "overwritten"
+        diff = self._diff_lines(old_b, new_b, key)
+        added, removed = self._counts(diff)
+        backup_path = self._do_backup(dest, old_b) if not self.dry_run else None
+        self.changes.append({"key": key, "action": action,
+                             "label": self._label(key, old_b),
+                             "added": added, "removed": removed,
+                             "diff": diff, "backup": backup_path})
+
+    def _record_tree(self, dest_dir, src_dir, key_prefix):
+        old_files = ({p.relative_to(dest_dir): p for p in dest_dir.rglob("*") if p.is_file()}
+                     if dest_dir.exists() else {})
+        new_files = {p.relative_to(src_dir): p for p in src_dir.rglob("*") if p.is_file()}
+        for sub in sorted(set(old_files) | set(new_files), key=lambda p: p.as_posix()):
+            key = f"{key_prefix}/{sub.as_posix()}"
+            old_b = old_files[sub].read_bytes() if sub in old_files else None
+            new_b = new_files[sub].read_bytes() if sub in new_files else None
+            self._record_tree_file(dest_dir / sub, key, old_b, new_b)
+
+    def replace_tree(self, dest_dir, src_dir, key_prefix):
+        """Back up + record per-file diffs, then byte-exact replace dest_dir with src_dir."""
+        dest_dir, src_dir = Path(dest_dir), Path(src_dir)
+        self._record_tree(dest_dir, src_dir, key_prefix)
+        if self.dry_run:
+            return
+        if dest_dir.exists():
+            shutil.rmtree(dest_dir)
+        shutil.copytree(src_dir, dest_dir)
+        for f in dest_dir.rglob("*"):
+            if f.is_file():
+                key = str(f.relative_to(self.project_dir / ".claude")).replace("\\", "/")
+                self.manifest["files"][key] = file_sha256(f)
+
     def put_file(self, dest, new_bytes, key, *, backup=True):
         """Write new_bytes to dest with backup (if overwriting) + recorded diff.
 

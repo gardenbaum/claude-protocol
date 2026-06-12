@@ -1113,50 +1113,51 @@ def bootstrap_project(
     if not install_beads(project_dir):
         return 1
 
-    all_skipped += copy_agents(recorder, resolved_name)
-    copy_hooks(recorder)
-    all_skipped += copy_rules_and_skills(recorder, with_rules)
-    copy_settings_and_claude_md(recorder, resolved_name)
-    setup_gitignore(project_dir)
-    recorder.print_report()
+    try:
+        all_skipped += copy_agents(recorder, resolved_name)
+        copy_hooks(recorder)
+        all_skipped += copy_rules_and_skills(recorder, with_rules)
+        copy_settings_and_claude_md(recorder, resolved_name)
+        setup_gitignore(project_dir)
+        recorder.print_report()
 
-    # Read version from package.json (same package as bootstrap.py)
-    pkg_json = SCRIPT_DIR / "package.json"
-    pkg_version = None
-    if pkg_json.exists():
-        try:
-            pkg_version = json.loads(pkg_json.read_text(encoding="utf-8")).get("version")
-        except Exception:
-            pass
+        # Read version from package.json (same package as bootstrap.py)
+        pkg_json = SCRIPT_DIR / "package.json"
+        pkg_version = None
+        if pkg_json.exists():
+            try:
+                pkg_version = json.loads(pkg_json.read_text(encoding="utf-8")).get("version")
+            except Exception:
+                pass
 
-    # Run upgrade cleanup AFTER init steps so manifest reflects our files.
-    # Legacy installs without manifest are handled by _auto_inject_legacy_files
-    # inside cleanup_obsolete — the OBSOLETE_* paths are dev-controlled and safe.
-    if upgrade:
-        report = cleanup_obsolete(project_dir, manifest, dry_run, timestamp=recorder.timestamp)
-        _print_cleanup_report(report, dry_run)
+        # Run upgrade cleanup AFTER init steps so manifest reflects our files.
+        # Legacy installs without manifest are handled by _auto_inject_legacy_files
+        # inside cleanup_obsolete — the OBSOLETE_* paths are dev-controlled and safe.
+        if upgrade:
+            report = cleanup_obsolete(project_dir, manifest, dry_run, timestamp=recorder.timestamp)
+            _print_cleanup_report(report, dry_run)
 
-    manifest["version"] = pkg_version
-    manifest["installed_at"] = datetime.now(timezone.utc).isoformat()
-    if not dry_run:
-        save_manifest(project_dir, manifest)
+        manifest["version"] = pkg_version
+        manifest["installed_at"] = datetime.now(timezone.utc).isoformat()
+        if not dry_run:
+            save_manifest(project_dir, manifest)
 
-    print("\n" + "=" * 60)
-    print("BOOTSTRAP COMPLETE")
-    print("=" * 60)
+        print("\n" + "=" * 60)
+        print("BOOTSTRAP COMPLETE")
+        print("=" * 60)
 
-    if all_skipped:
-        print(f"\n  {len(all_skipped)} file(s) skipped (user-modified):")
-        for rel in all_skipped:
-            print(f"    - {rel}")
-            print(f"      Review: diff .claude/{rel} .claude/.upgrades/{rel}")
+        if all_skipped:
+            print(f"\n  {len(all_skipped)} file(s) skipped (user-modified):")
+            for rel in all_skipped:
+                print(f"    - {rel}")
+                print(f"      Review: diff .claude/{rel} .claude/.upgrades/{rel}")
 
-    # Post-upgrade health check — never fatal
-    if upgrade and not dry_run:
-        print("")
-        run_bd_doctor(project_dir)
+        # Post-upgrade health check — never fatal
+        if upgrade and not dry_run:
+            print("")
+            run_bd_doctor(project_dir)
 
-    print(f"""
+        print(f"""
 Next steps:
 
 1. Restart Claude Code to load hooks and agents
@@ -1164,7 +1165,19 @@ Next steps:
 3. Create your first bead: bd create "Task" -d "Description"
 4. Dispatch work: Task(subagent_type="general-purpose", prompt="BEAD_ID: ...")
 """)
-    return 0
+        return 0
+    except Exception as e:
+        # Mid-step failure: surface the [CHANGES] report so the user sees
+        # what landed, and best-effort save the manifest so the next run
+        # doesn't churn through those files as 'modified'.
+        print(f"\n[BOOTSTRAP FAILED] {type(e).__name__}: {e}")
+        recorder.print_report()
+        if not dry_run:
+            try:
+                save_manifest(project_dir, manifest)
+            except Exception as save_err:
+                print(f"  (manifest save also failed: {save_err})")
+        return 1
 
 
 def run_batch_upgrade(

@@ -1196,6 +1196,60 @@ class TestAllFlag:
         assert exc.value.code == 1
 
 
+class TestBootstrapProjectErrorHandling:
+    def test_mid_step_failure_still_reports_and_saves_manifest(
+        self, tmp_path, monkeypatch, capsys,
+    ):
+        """If a sub-step raises after some put_file calls have succeeded,
+        bootstrap_project must (a) print the [CHANGES] report so the user
+        sees what landed and (b) save_manifest so the next run doesn't
+        churn through those files as 'modified'.
+
+        Regression for the silent-orphan pattern: without the try/except
+        wrapper, the user sees a Python traceback and the manifest on
+        disk is stale, so the next run re-backs-up everything.
+        """
+        # Two successful put_file calls, then a third sub-step raises.
+        def fake_copy_agents(recorder, project_name):
+            dest = tmp_path / ".claude" / "agents" / "a.md"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            recorder.put_file(dest, b"agent content\n", "agents/a.md")
+            return []
+
+        def fake_copy_hooks(recorder):
+            dest = tmp_path / ".claude" / "hooks" / "h.cjs"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            recorder.put_file(dest, b"hook content\n", "hooks/h.cjs")
+
+        def boom(recorder, with_rules):
+            raise RuntimeError("simulated mid-step failure")
+
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd: True)
+        monkeypatch.setattr(bootstrap, "copy_agents", fake_copy_agents)
+        monkeypatch.setattr(bootstrap, "copy_hooks", fake_copy_hooks)
+        monkeypatch.setattr(bootstrap, "copy_rules_and_skills", boom)
+        monkeypatch.setattr(
+            bootstrap, "copy_settings_and_claude_md", lambda *a, **kw: None,
+        )
+        monkeypatch.setattr(bootstrap, "setup_gitignore", lambda *a, **kw: None)
+        monkeypatch.setattr(bootstrap, "run_bd_doctor", lambda *a, **kw: None)
+
+        rc = bootstrap.bootstrap_project(
+            project_dir=tmp_path, project_name="P", with_rules=False,
+            force=False, upgrade=False, dry_run=False,
+        )
+
+        assert rc == 1
+        out = capsys.readouterr().out
+        assert "[CHANGES]" in out  # report still printed on failure
+        assert "agents/a.md" in out  # the two successful writes are visible
+
+        # Manifest was saved — next run sees the new files as 'pristine'.
+        manifest = bootstrap.load_manifest(tmp_path)
+        assert "agents/a.md" in manifest["files"]
+        assert "hooks/h.cjs" in manifest["files"]
+
+
 class TestBdDoctorSoftFailure:
     def test_missing_bd_is_soft_failure(self, tmp_path, monkeypatch, capsys):
         """bd not on PATH → prints warning, does not raise."""

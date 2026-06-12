@@ -1262,6 +1262,21 @@ class TestSettingsMergePreservesBdHook:
         assert any("session-start.cjs" in c for c in cmds)  # ours added too
 
 
+class TestSettingsParseFailureBackup:
+    def test_unparseable_settings_backed_up_then_replaced(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(bootstrap, "TEMPLATES_DIR", _fake_templates_dir(tmp_path))
+        (tmp_path / ".claude").mkdir(parents=True)
+        broken = tmp_path / ".claude" / "settings.json"
+        broken.write_text("{ this is not valid json ")
+        rec = bootstrap.ChangeRecorder(tmp_path)
+        bootstrap.copy_settings_and_claude_md(rec, "Proj")
+        # valid JSON written
+        assert "hooks" in json.loads(broken.read_text())
+        # broken original backed up byte-exact
+        backup = rec.backup_root / "overwritten" / ".claude" / "settings.json"
+        assert backup.read_text() == "{ this is not valid json "
+
+
 class TestClaudeMdAppendIdempotent:
     def test_orchestration_appended_once(self, tmp_path, monkeypatch):
         monkeypatch.setattr(bootstrap, "TEMPLATES_DIR",
@@ -1301,6 +1316,33 @@ class TestClaudeMdAppendIdempotent:
 class TestChangeRecorder:
     def _rec(self, tmp_path, **kw):
         return bootstrap.ChangeRecorder(tmp_path, {"files": {}}, **kw)
+
+    def test_force_backs_up_locally_modified(self, tmp_path):
+        rec = bootstrap.ChangeRecorder(
+            tmp_path, {"files": {"hooks/x.cjs": "sha256:doesnotmatch"}}, force=True)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"user changed this\n")
+        rec.put_file(dest, b"new template\n", "hooks/x.cjs")
+        backup = rec.backup_root / "overwritten" / ".claude" / "hooks" / "x.cjs"
+        assert backup.read_bytes() == b"user changed this\n"
+        assert rec.changes[-1]["label"] == "locally-modified"
+
+    def test_atomic_write_failure_preserves_original(self, tmp_path, monkeypatch):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"original\n")
+        rec.manifest["files"]["hooks/x.cjs"] = bootstrap.bytes_sha256(b"original\n")
+        def boom(src, dst):
+            raise OSError("disk full")
+        monkeypatch.setattr(bootstrap.os, "replace", boom)
+        with pytest.raises(OSError):
+            rec.put_file(dest, b"new\n", "hooks/x.cjs")
+        assert dest.read_bytes() == b"original\n"  # original intact
+        leftovers = [p.name for p in dest.parent.iterdir() if p.name.startswith(".cp-tmp-")]
+        assert leftovers == []  # temp cleaned up
+        assert rec.manifest["files"]["hooks/x.cjs"] == bootstrap.bytes_sha256(b"original\n")  # not mutated
 
     def test_new_file_written_no_backup(self, tmp_path):
         rec = self._rec(tmp_path)

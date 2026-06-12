@@ -363,6 +363,30 @@ class ChangeRecorder:
                              "diff": diff, "backup": backup_path})
         return action
 
+    @staticmethod
+    def _summary_line(c):
+        label = f"  {c['label']}" if c.get("label") else ""
+        counts = "" if c["action"] == "new" else f"  +{c['added']} -{c['removed']}"
+        return f"  {c['action']:<12} {c['key']}{label}{counts}"
+
+    def print_report(self):
+        changed = [c for c in self.changes if c["action"] != "unchanged"]
+        tally = {}
+        for c in changed:
+            tally[c["action"]] = tally.get(c["action"], 0) + 1
+        summary = ", ".join(f"{n} {a}" for a, n in sorted(tally.items())) or "no changes"
+        backup = str(self.backup_root) if self._backup_created else "(none)"
+        prefix = "[DRY-RUN] " if self.dry_run else ""
+        print(f"\n{prefix}[CHANGES] {summary}   backup: {backup}")
+        for c in changed:
+            print(self._summary_line(c))
+        if not self.no_diff:
+            for c in changed:
+                if c["diff"]:
+                    print("")
+                    for line in c["diff"]:
+                        print(line)
+
 
 # ============================================================================
 # UPGRADE CLEANUP

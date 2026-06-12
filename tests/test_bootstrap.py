@@ -1427,3 +1427,34 @@ class TestChangeRecorder:
         assert backup.read_bytes() == b"gone\n"
         assert "skills/project-discovery/OLD.md" not in rec.manifest["files"]
         assert "skills/project-discovery/SKILL.md" in rec.manifest["files"]
+
+    def test_report_shows_summary_and_diff(self, tmp_path, capsys):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"line1\nline2\n")
+        rec.put_file(dest, b"line1\nCHANGED\n", "hooks/x.cjs")
+        rec.print_report()
+        out = capsys.readouterr().out
+        assert "[CHANGES]" in out
+        assert "overwritten" in out
+        assert "hooks/x.cjs" in out
+        assert "-line2" in out and "+CHANGED" in out  # full diff present
+
+    def test_report_no_diff_suppresses_full_diff(self, tmp_path, capsys):
+        rec = self._rec(tmp_path, no_diff=True)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"line1\nline2\n")
+        rec.put_file(dest, b"line1\nCHANGED\n", "hooks/x.cjs")
+        rec.print_report()
+        out = capsys.readouterr().out
+        assert "hooks/x.cjs" in out          # summary still shown
+        assert "+CHANGED" not in out          # full diff suppressed
+
+    def test_report_empty_says_no_changes(self, tmp_path, capsys):
+        rec = self._rec(tmp_path)
+        rec.print_report()
+        out = capsys.readouterr().out
+        assert "[CHANGES]" in out
+        assert "no changes" in out

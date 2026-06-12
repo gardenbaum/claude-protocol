@@ -617,16 +617,39 @@ def _run_bd(args: list, project_dir: Path, label: str) -> bool:
 
 def _git_origin_url(project_dir: Path) -> str | None:
     """Return the URL of git remote 'origin', or None if unset/unavailable."""
+    return _git_config_get(project_dir, "remote.origin.url")
+
+
+def _git_config_get(project_dir: Path, key: str) -> str | None:
+    """Return a git config value, or None if unset/unavailable. Never raises."""
     try:
         result = subprocess.run(
-            ["git", "remote", "get-url", "origin"], cwd=project_dir,
+            ["git", "config", "--get", key], cwd=project_dir,
             capture_output=True, text=True,
             shell=_SHELL, stdin=subprocess.DEVNULL, timeout=10,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
-    url = (result.stdout or "").strip()
-    return url if result.returncode == 0 and url else None
+    value = (result.stdout or "").strip()
+    return value if result.returncode == 0 and value else None
+
+
+def _install_shared_hooks(project_dir: Path) -> None:
+    """Install bd's shared git hooks unless that would hijack existing hooks.
+
+    `bd hooks install --shared` sets core.hooksPath=.beads-hooks and does NOT
+    chain to a pre-existing core.hooksPath or .husky/. So we skip (with a clear
+    warning) when another hook manager is already wired up.
+    """
+    existing = _git_config_get(project_dir, "core.hooksPath")
+    husky = (project_dir / ".husky").is_dir()
+    if (existing and existing != ".beads-hooks") or husky:
+        print("  - WARNING: existing git hooks detected (core.hooksPath/.husky) "
+              "— skipping 'bd hooks install --shared'. Wire bead sync manually "
+              "with: bd hooks install")
+        return
+    _run_bd(["hooks", "install", "--shared"], project_dir,
+            "install shared git hooks")
 
 
 def configure_beads_sync(project_dir: Path) -> bool:
@@ -647,13 +670,12 @@ def configure_beads_sync(project_dir: Path) -> bool:
                  "enable dolt.auto-push") and ok
     origin = _git_origin_url(project_dir)
     if origin:
-        # Idempotent-ish: a pre-existing remote makes this a no-op warning.
+        # idempotent enough: re-adding an existing remote just succeeds
         _run_bd(["dolt", "remote", "add", "origin", origin], project_dir,
                 "add Dolt remote 'origin'")
     else:
         print("  - no git origin; Dolt sync stays local until a remote is added")
-    _run_bd(["hooks", "install", "--shared"], project_dir,
-            "install shared git hooks")
+    _install_shared_hooks(project_dir)
     if ok:
         print("  - Sync configured (JSONL git-backup + Dolt remote + shared hooks)")
     else:

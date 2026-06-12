@@ -338,6 +338,50 @@ class TestConfigureBeadsSync:
 
 
 # ============================================================================
+# _install_shared_hooks — must not hijack existing git hooks
+# ============================================================================
+
+class TestInstallSharedHooks:
+    def _patch(self, monkeypatch, hooks_path=None):
+        calls = []
+        class FakeResult:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return FakeResult()
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        monkeypatch.setattr(bootstrap, "_git_config_get", lambda _d, _k: hooks_path)
+        return calls
+
+    def test_installs_when_no_existing_hooks(self, tmp_path, monkeypatch, capsys):
+        calls = self._patch(monkeypatch, hooks_path=None)
+        bootstrap._install_shared_hooks(tmp_path)
+        assert ["bd", "hooks", "install", "--shared"] in calls
+
+    def test_installs_when_hookspath_is_beads(self, tmp_path, monkeypatch, capsys):
+        """Re-running with bd's own hooksPath already set is fine."""
+        calls = self._patch(monkeypatch, hooks_path=".beads-hooks")
+        bootstrap._install_shared_hooks(tmp_path)
+        assert ["bd", "hooks", "install", "--shared"] in calls
+
+    def test_skips_when_existing_hookspath(self, tmp_path, monkeypatch, capsys):
+        calls = self._patch(monkeypatch, hooks_path=".husky")
+        bootstrap._install_shared_hooks(tmp_path)
+        assert ["bd", "hooks", "install", "--shared"] not in calls
+        assert "WARNING" in capsys.readouterr().out
+
+    def test_skips_when_husky_dir_present(self, tmp_path, monkeypatch, capsys):
+        (tmp_path / ".husky").mkdir()
+        calls = self._patch(monkeypatch, hooks_path=None)
+        bootstrap._install_shared_hooks(tmp_path)
+        assert ["bd", "hooks", "install", "--shared"] not in calls
+        assert "WARNING" in capsys.readouterr().out
+
+
+# ============================================================================
 # _run_bd / _git_origin_url helpers
 # ============================================================================
 

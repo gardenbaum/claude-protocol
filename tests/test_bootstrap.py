@@ -287,6 +287,21 @@ class TestSetupGitignore:
         content = (tmp_path / ".gitignore").read_text()
         assert content.count(".claude/.upgrades/") == 1
 
+    def test_warns_when_issues_jsonl_is_gitignored(self, tmp_path, monkeypatch, capsys):
+        """A pre-existing ignore of .beads/issues.jsonl breaks bd auto-export —
+        setup_gitignore must surface that, not stay silent."""
+        monkeypatch.setattr(bootstrap, "_path_is_gitignored",
+                            lambda d, rel: rel == ".beads/issues.jsonl")
+        setup_gitignore(tmp_path)
+        out = capsys.readouterr().out
+        assert ".beads/issues.jsonl" in out
+        assert "gitignored" in out
+
+    def test_no_conflict_warning_when_not_ignored(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(bootstrap, "_path_is_gitignored", lambda d, rel: False)
+        setup_gitignore(tmp_path)
+        assert "gitignored" not in capsys.readouterr().out
+
 
 # ============================================================================
 # install_beads — dry-run must not mutate

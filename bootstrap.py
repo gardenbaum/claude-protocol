@@ -1058,6 +1058,19 @@ def copy_settings_and_claude_md(recorder, project_name):
     print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
+def _path_is_gitignored(project_dir: Path, rel: str) -> bool:
+    """True if `rel` is ignored by git in project_dir. Read-only; never raises."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "-q", rel], cwd=project_dir,
+            capture_output=True, text=True, shell=_SHELL,
+            stdin=subprocess.DEVNULL, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
 def setup_gitignore(project_dir: Path) -> None:
     """Ensure .worktrees/ and .claude/.upgrades/ are in .gitignore.
 
@@ -1093,6 +1106,14 @@ def setup_gitignore(project_dir: Path) -> None:
             encoding='utf-8',
         )
         print("  - Created .gitignore")
+
+    # A pre-existing ignore of the readable export breaks bd auto-sync (the
+    # "paths are ignored" warnings in step [1/6]). We don't edit the user's
+    # rules — just surface the conflict with the fix.
+    if _path_is_gitignored(project_dir, ".beads/issues.jsonl"):
+        print("  - WARNING: .beads/issues.jsonl is gitignored — bd's readable "
+              "export/auto-sync will fail. Remove that ignore rule so the "
+              "backup stays git-tracked.")
 
     print("  DONE")
 

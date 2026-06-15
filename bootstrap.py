@@ -914,79 +914,69 @@ def configure_beads_sync(project_dir: Path) -> bool:
 
 def copy_agents(recorder, project_name):
     """Copy code-reviewer and merge-supervisor templates."""
-    print("\n[2/6] Copying agents...")
+    print("\n[2/6] Agents", end="")
+    start = len(recorder.changes)
     agents_dir = recorder.project_dir / ".claude" / "agents"
     agents_dir.mkdir(parents=True, exist_ok=True)
-    skipped = []
     replacements = {"[Project]": project_name}
     for agent_file in (TEMPLATES_DIR / "agents").glob("*.md"):
         dest = agents_dir / agent_file.name
         rel_key = f"agents/{agent_file.name}"
-        ok, reason = should_update_file(dest, rel_key, recorder.manifest, recorder.force)
+        ok, _ = should_update_file(dest, rel_key, recorder.manifest, recorder.force)
         new_content = _render(agent_file, replacements)
         if ok:
             recorder.put_file(dest, new_content.encode("utf-8"), rel_key)
-            print(f"  - {agent_file.name}" + (f" ({reason})" if reason != "new" else ""))
         else:
             save_upgrade(recorder.project_dir, rel_key, new_content)
-            skipped.append(rel_key)
-            print(f"  - {agent_file.name} (MODIFIED by user — skipped)")
-            print(f"    New version saved to: .claude/.upgrades/{rel_key}")
-    print("  DONE")
-    return skipped
+            recorder.record_skip(rel_key)
+    print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
 def copy_hooks(recorder):
     """Copy Node.js hooks (always overwrite — enforcement code), with backup + diff."""
-    print("\n[3/6] Copying hooks...")
+    print("\n[3/6] Hooks", end="")
+    start = len(recorder.changes)
     hooks_dir = recorder.project_dir / ".claude" / "hooks"
     hooks_dir.mkdir(parents=True, exist_ok=True)
     for hook_file in (TEMPLATES_DIR / "hooks").glob("*.cjs"):
         dest = hooks_dir / hook_file.name
         recorder.put_file(dest, hook_file.read_bytes(), f"hooks/{hook_file.name}")
-        print(f"  - {hook_file.name}")
-    print("  DONE")
+    print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
 def _copy_rule(recorder, rule_file, rules_dir):
-    """Copy one rule verbatim through the recorder; return [rel_key] if skipped."""
+    """Copy one rule verbatim through the recorder; record_skip if user-modified."""
     dest = rules_dir / rule_file.name
     rel_key = f"rules/{rule_file.name}"
-    ok, reason = should_update_file(dest, rel_key, recorder.manifest, recorder.force)
+    ok, _ = should_update_file(dest, rel_key, recorder.manifest, recorder.force)
     if ok:
         recorder.put_file(dest, rule_file.read_bytes(), rel_key)
-        suffix = f" ({reason})" if reason != "new" else ""
-        print(f"  - rules/{rule_file.name}{suffix}")
-        return []
-    save_upgrade(recorder.project_dir, rel_key, rule_file.read_text(encoding="utf-8"))
-    print(f"  - rules/{rule_file.name} (MODIFIED by user — skipped)")
-    print(f"    New version saved to: .claude/.upgrades/{rel_key}")
-    return [rel_key]
+    else:
+        save_upgrade(recorder.project_dir, rel_key, rule_file.read_text(encoding="utf-8"))
+        recorder.record_skip(rel_key)
 
 
 def copy_rules_and_skills(recorder, with_rules):
     """Copy beads-workflow rule, project-discovery skill, and optional dev rules."""
-    print("\n[4/6] Copying rules and skills...")
+    print("\n[4/6] Rules & skills", end="")
+    start = len(recorder.changes)
     rules_dir = recorder.project_dir / ".claude" / "rules"
     rules_dir.mkdir(parents=True, exist_ok=True)
-    skipped = []
     rules_src_dir = TEMPLATES_DIR / "rules"
 
     beads_src = rules_src_dir / "beads-workflow.md"
     if beads_src.exists():
-        skipped += _copy_rule(recorder, beads_src, rules_dir)
+        _copy_rule(recorder, beads_src, rules_dir)
     if with_rules:
         for rule_file in rules_src_dir.glob("*.md"):
             if rule_file.name != "beads-workflow.md":
-                skipped += _copy_rule(recorder, rule_file, rules_dir)
+                _copy_rule(recorder, rule_file, rules_dir)
 
     skill_src = TEMPLATES_DIR / "skills" / "project-discovery"
     if skill_src.exists():
         dest = recorder.project_dir / ".claude" / "skills" / "project-discovery"
         recorder.replace_tree(dest, skill_src, "skills/project-discovery")
-        print("  - skills/project-discovery/")
-    print("  DONE")
-    return skipped
+    print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
 def _json_bytes(data: dict) -> bytes:
@@ -1017,17 +1007,14 @@ def _write_settings(recorder):
     new_settings = json.loads(settings_src.read_text(encoding="utf-8"))
     if not settings_dest.exists():
         recorder.put_file(settings_dest, _json_bytes(new_settings), "settings.json")
-        print("  - settings.json")
         return
     try:
         merged = _merge_settings(
             json.loads(settings_dest.read_text(encoding="utf-8")), new_settings
         )
         recorder.put_file(settings_dest, _json_bytes(merged), "settings.json")
-        print("  - settings.json (merged hooks)")
     except Exception:
         recorder.put_file(settings_dest, _json_bytes(new_settings), "settings.json")
-        print("  - settings.json (replaced — could not merge)")
 
 
 def _write_claude_md(recorder, project_name):
@@ -1040,23 +1027,21 @@ def _write_claude_md(recorder, project_name):
     if not claude_dest.exists():
         recorder.put_file(claude_dest, (f"{marker}\n" + body).encode("utf-8"),
                           "CLAUDE.md", backup=False)
-        print("  - CLAUDE.md (created)")
         return
     existing = claude_dest.read_text(encoding="utf-8")
     if marker in existing:
-        print("  - CLAUDE.md (orchestration section present, skipped)")
         return
     new_content = existing + f"\n\n---\n\n{marker}\n" + body
     recorder.put_file(claude_dest, new_content.encode("utf-8"), "CLAUDE.md", backup=False)
-    print("  - CLAUDE.md (appended orchestration section)")
 
 
 def copy_settings_and_claude_md(recorder, project_name):
     """Write settings.json (merge hooks) and CLAUDE.md (append if exists)."""
-    print("\n[5/6] Copying settings and CLAUDE.md...")
+    print("\n[5/6] Settings", end="")
+    start = len(recorder.changes)
     _write_settings(recorder)
     _write_claude_md(recorder, project_name)
-    print("  DONE")
+    print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
 def setup_gitignore(project_dir: Path) -> None:
@@ -1156,15 +1141,14 @@ def bootstrap_project(
     manifest = load_manifest(project_dir)
     recorder = ChangeRecorder(project_dir, manifest, force=force,
                               dry_run=dry_run, no_diff=no_diff)
-    all_skipped = []
 
     if not install_beads(project_dir):
         return 1
 
     try:
-        all_skipped += copy_agents(recorder, resolved_name)
+        copy_agents(recorder, resolved_name)
         copy_hooks(recorder)
-        all_skipped += copy_rules_and_skills(recorder, with_rules)
+        copy_rules_and_skills(recorder, with_rules)
         copy_settings_and_claude_md(recorder, resolved_name)
         setup_gitignore(project_dir)
         recorder.print_report()
@@ -1193,12 +1177,6 @@ def bootstrap_project(
         print("\n" + "=" * 60)
         print("BOOTSTRAP COMPLETE")
         print("=" * 60)
-
-        if all_skipped:
-            print(f"\n  {len(all_skipped)} file(s) skipped (user-modified):")
-            for rel in all_skipped:
-                print(f"    - {rel}")
-                print(f"      Review: diff .claude/{rel} .claude/.upgrades/{rel}")
 
         # Post-upgrade health check — never fatal
         if upgrade and not dry_run:

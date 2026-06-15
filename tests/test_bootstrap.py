@@ -1241,7 +1241,7 @@ class TestBootstrapProjectErrorHandling:
 
         assert rc == 1
         out = capsys.readouterr().out
-        assert "[CHANGES]" in out  # report still printed on failure
+        assert "2 files changed" in out  # report still printed on failure
         assert "agents/a.md" in out  # the two successful writes are visible
 
         # Manifest was saved — next run sees the new files as 'pristine'.

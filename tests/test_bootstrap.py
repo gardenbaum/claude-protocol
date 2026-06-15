@@ -1769,3 +1769,73 @@ class TestSummarizeChanges:
 
     def test_only_updated(self):
         assert bootstrap.summarize_changes([self._c("overwritten")]) == "1 updated"
+
+
+# ============================================================================
+# ANSI color
+# ============================================================================
+
+class TestColor:
+    @pytest.fixture(autouse=True)
+    def _reset_color(self):
+        yield
+        bootstrap.configure_color("never")  # never leak color state to other tests
+
+    def test_paint_noop_when_disabled(self, monkeypatch):
+        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", False)
+        assert bootstrap._paint("hi", "green") == "hi"
+
+    def test_paint_wraps_when_enabled(self, monkeypatch):
+        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", True)
+        out = bootstrap._paint("hi", "green")
+        assert out == "\033[32mhi\033[0m"
+
+    def test_paint_noop_without_styles(self, monkeypatch):
+        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", True)
+        assert bootstrap._paint("hi") == "hi"  # no stray reset code
+
+    def test_diff_line_colors(self, monkeypatch):
+        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", True)
+        assert bootstrap._color_diff_line("+added").startswith("\033[32m")     # green
+        assert bootstrap._color_diff_line("-gone").startswith("\033[31m")      # red
+        assert bootstrap._color_diff_line("@@ -1 +1 @@").startswith("\033[36m")  # cyan
+        assert bootstrap._color_diff_line("+++ b/x").startswith("\033[1m")     # bold header
+        assert bootstrap._color_diff_line("--- a/x").startswith("\033[1m")     # bold header
+        assert bootstrap._color_diff_line(" ctx") == " ctx"                    # untouched
+
+    def test_diff_line_plain_when_disabled(self, monkeypatch):
+        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", False)
+        assert bootstrap._color_diff_line("+added") == "+added"
+
+    def test_configure_color_always_and_never(self):
+        bootstrap.configure_color("always")
+        assert bootstrap._COLOR_ENABLED is True
+        bootstrap.configure_color("never")
+        assert bootstrap._COLOR_ENABLED is False
+
+    def test_auto_off_under_no_color(self, monkeypatch):
+        monkeypatch.setenv("NO_COLOR", "1")
+        bootstrap.configure_color("auto")
+        assert bootstrap._COLOR_ENABLED is False
+
+    def test_auto_off_when_not_a_tty(self, monkeypatch):
+        monkeypatch.delenv("NO_COLOR", raising=False)
+        bootstrap.configure_color("auto")  # pytest stdout is not a tty
+        assert bootstrap._COLOR_ENABLED is False
+
+    def test_report_line_colors_verb_and_counts(self, monkeypatch):
+        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", True)
+        c = {"action": "overwritten", "key": "hooks/x.cjs",
+             "added": 6, "removed": 48, "label": "pristine"}
+        line = bootstrap.ChangeRecorder._report_line(c, 12)
+        assert "\033[33m" in line  # UPDATE yellow
+        assert "\033[32m" in line  # +6 green
+        assert "\033[31m" in line  # -48 red
+
+    def test_report_line_byte_identical_when_color_off(self, monkeypatch):
+        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", False)
+        c = {"action": "overwritten", "key": "hooks/x.cjs",
+             "added": 6, "removed": 48, "label": "pristine"}
+        line = bootstrap.ChangeRecorder._report_line(c, 12)
+        assert "\033[" not in line
+        assert line == "  UPDATE  hooks/x.cjs    +6 -48"

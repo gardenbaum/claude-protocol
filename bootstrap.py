@@ -38,6 +38,54 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 TEMPLATES_DIR = SCRIPT_DIR / "templates"
 
 
+# ---------------------------------------------------------------------------
+# ANSI color — auto-enabled on a TTY, suppressed under NO_COLOR / TERM=dumb /
+# when piped. configure_color() runs once from main(); library callers and
+# tests get color OFF by default, so captured output stays byte-for-byte plain.
+# ---------------------------------------------------------------------------
+_ANSI = {
+    "reset": "\033[0m", "bold": "\033[1m", "dim": "\033[2m",
+    "red": "\033[31m", "green": "\033[32m", "yellow": "\033[33m", "cyan": "\033[36m",
+}
+_COLOR_ENABLED = False
+
+
+def configure_color(mode: str = "auto") -> None:
+    """Set global color state. mode: 'always' | 'never' | 'auto'."""
+    global _COLOR_ENABLED
+    if mode == "always":
+        _COLOR_ENABLED = True
+    elif mode == "never":
+        _COLOR_ENABLED = False
+    else:
+        _COLOR_ENABLED = (
+            sys.stdout.isatty()
+            and os.environ.get("NO_COLOR") is None
+            and os.environ.get("TERM") != "dumb"
+        )
+
+
+def _paint(text: str, *styles: str) -> str:
+    """Wrap text in ANSI styles when color is enabled; otherwise return as-is."""
+    if not _COLOR_ENABLED or not text or not styles:
+        return text
+    codes = "".join(_ANSI[s] for s in styles)
+    return f"{codes}{text}{_ANSI['reset']}"
+
+
+def _color_diff_line(line: str) -> str:
+    """Colorize one unified-diff line (no-op when color disabled)."""
+    if line[:3] in ("---", "+++"):
+        return _paint(line, "bold")
+    if line.startswith("@@"):
+        return _paint(line, "cyan")
+    if line.startswith("+"):
+        return _paint(line, "green")
+    if line.startswith("-"):
+        return _paint(line, "red")
+    return line
+
+
 # ============================================================================
 # OBSOLETE ITEMS (per-release cleanup targets)
 # ============================================================================
@@ -382,32 +430,39 @@ class ChangeRecorder:
                              "added": 0, "removed": 0, "diff": [], "backup": None})
 
     _VERB = {"overwritten": "UPDATE", "new": "NEW", "appended": "APPEND", "removed": "REMOVE"}
+    _VERB_STYLE = {"overwritten": ("yellow",), "new": ("green",),
+                   "appended": ("cyan",), "removed": ("red",)}
 
     @staticmethod
     def _report_line(c, width):
-        verb = ChangeRecorder._VERB.get(c["action"], c["action"].upper())
+        raw = ChangeRecorder._VERB.get(c["action"], c["action"].upper())
+        verb = _paint(f"{raw:<7}", *ChangeRecorder._VERB_STYLE.get(c["action"], ()))
+        key = f"{c['key']:<{width}}"
         text = c.get("note") or (
             "your edits will be replaced" if c.get("label") == "locally-modified" else "")
-        note = f"   {text}" if text else ""
-        counts = "" if c["action"] == "new" else f"   +{c['added']} -{c['removed']}"
-        return f"  {verb:<7} {c['key']:<{width}}{note}{counts}".rstrip()
+        note = f"   {_paint(text, 'dim')}" if text else ""
+        counts = "" if c["action"] == "new" else (
+            f"   {_paint('+' + str(c['added']), 'green')} "
+            f"{_paint('-' + str(c['removed']), 'red')}")
+        return f"  {verb} {key}{note}{counts}".rstrip()
 
     def _headline(self, n):
         plural = "s" if n != 1 else ""
         if self.dry_run:
-            return (f"DRY-RUN — {n} file{plural} would change, nothing written"
-                    if n else "DRY-RUN — no changes, everything up to date")
+            msg = (f"DRY-RUN — {n} file{plural} would change, nothing written"
+                   if n else "DRY-RUN — no changes, everything up to date")
+            return _paint(msg, "bold")
         if not n:
-            return "No changes — everything up to date"
+            return _paint("No changes — everything up to date", "bold")
         backup = f"   backup: {self.backup_root}" if self._backup_created else ""
-        return f"{n} file{plural} changed{backup}"
+        return _paint(f"{n} file{plural} changed", "bold") + _paint(backup, "dim")
 
     def _print_diffs(self, changed):
         for c in changed:
             if c["diff"]:
                 print("")
                 for line in c["diff"]:
-                    print(line)
+                    print(_color_diff_line(line))
 
     def print_report(self):
         changed = [c for c in self.changes if c["action"] not in ("unchanged", "kept")]
@@ -419,7 +474,9 @@ class ChangeRecorder:
             for c in changed:
                 print(self._report_line(c, width))
         if kept:
-            print("\n  KEPT (you modified these — new version staged in .claude/.upgrades/):")
+            print("\n" + _paint(
+                "  KEPT (you modified these — new version staged in .claude/.upgrades/):",
+                "dim"))
             for c in kept:
                 print(f"    {c['key']}")
         if changed:
@@ -1291,7 +1348,11 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print plan without writing anything")
     parser.add_argument("--no-diff", action="store_true", help="Suppress full per-file diffs (summary + backups still shown)")
     parser.add_argument("--all", dest="all_parent", default=None, metavar="PARENT_DIR", help="Batch upgrade: iterate direct subdirs of PARENT_DIR that contain .beads/. Implies --upgrade.")
+    parser.add_argument("--color", dest="color", action="store_const", const="always", default="auto", help="Force ANSI color output (default: auto-detect a TTY)")
+    parser.add_argument("--no-color", dest="color", action="store_const", const="never", help="Disable ANSI color output (also honors the NO_COLOR env var)")
     args = parser.parse_args()
+
+    configure_color(args.color)
 
     if args.all_parent:
         parent = Path(args.all_parent).resolve()

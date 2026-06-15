@@ -1505,6 +1505,10 @@ class TestChangeRecorder:
         rec.put_file(dest, b"v2\n", "rules/r.md")
         assert rec.changes[-1]["label"] == "pristine"
 
+        dest.write_bytes(b"user edit\n")
+        rec.put_file(dest, b"v3\n", "rules/r.md")
+        assert rec.changes[-1]["label"] == "locally-modified"
+
     def test_record_skip_adds_kept_change_no_write(self, tmp_path):
         rec = self._rec(tmp_path)
         dest = tmp_path / ".claude" / "rules" / "x.md"

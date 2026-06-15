@@ -936,6 +936,53 @@ def _run_bd(args: list, project_dir: Path, label: str) -> bool:
     return True
 
 
+def _bd_config_get(project_dir: Path, key: str) -> str | None:
+    """Read a bd config value (the last non-empty stdout line), or None.
+
+    Tolerates rc!=0: bd's auto-export `git add` of a gitignored .beads/issues.jsonl
+    can fail and set rc=1 while the value is still printed to stdout.
+    """
+    try:
+        result = subprocess.run(
+            ["bd", "config", "get", key], cwd=project_dir, capture_output=True,
+            text=True, shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    lines = [ln.strip() for ln in (result.stdout or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else None
+
+
+def _set_bd_config(project_dir: Path, key: str, value: str) -> bool:
+    """Set a bd config value and VERIFY it stuck (read-back), not the set's rc.
+
+    `bd config set` exits non-zero when a due auto-export tries to `git add` a
+    gitignored .beads/issues.jsonl — but the config.yaml write still persists.
+    Trusting that rc would print a false 'failed' warning. So we run the set
+    quietly, then confirm via `bd config get`, warning only if it truly didn't
+    take. Returns True when verified (or unverifiable — best-effort, no false
+    alarm).
+    """
+    if not shutil.which("bd"):
+        print(f"  - bd not available, skipping set {key}={value}")
+        return False
+    try:
+        subprocess.run(
+            ["bd", "config", "set", key, value], cwd=project_dir,
+            capture_output=True, text=True, shell=_SHELL,
+            stdin=subprocess.DEVNULL, timeout=15,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        print(f"  - WARNING: set {key}={value} could not run: {exc}")
+        return False
+    actual = _bd_config_get(project_dir, key)
+    if actual is not None and actual != value:
+        print(f"  - WARNING: {key} is '{actual}', expected '{value}' "
+              f"— set it manually: bd config set {key} {value}")
+        return False
+    return True
+
+
 def _git_origin_url(project_dir: Path) -> str | None:
     """Return the URL of git remote 'origin', or None if unset/unavailable."""
     return _git_config_get(project_dir, "remote.origin.url")
@@ -990,10 +1037,12 @@ def configure_beads_sync(project_dir: Path, jsonl: bool = False) -> bool:
               "(run sync setup later: bd hooks install --shared)")
         return False
     export_val = "true" if jsonl else "false"
-    ok = _run_bd(["config", "set", "export.auto", export_val], project_dir,
-                 f"set export.auto={export_val}")
-    ok = _run_bd(["config", "set", "export.git-add", export_val], project_dir,
-                 f"set export.git-add={export_val}") and ok
+    # git-add BEFORE auto: turning git-add off first means a "due" auto-export
+    # (export.interval elapsed) won't try to `git add` a gitignored issues.jsonl
+    # during the transition. Both are verified by read-back (see _set_bd_config),
+    # so bd's cosmetic rc=1 from a failed post-write git-add isn't misreported.
+    ok = _set_bd_config(project_dir, "export.git-add", export_val)
+    ok = _set_bd_config(project_dir, "export.auto", export_val) and ok
     ok = _run_bd(["config", "set", "dolt.auto-push", "true"], project_dir,
                  "enable dolt.auto-push") and ok
     origin = _git_origin_url(project_dir)

@@ -2024,6 +2024,59 @@ class TestBootstrapDryRunNoSideEffects:
         assert not target.exists()
 
 
+class TestSetBdConfigVerifies:
+    """_set_bd_config must trust a read-back, not `bd config set`'s exit code —
+    bd returns rc=1 when its post-write auto-export `git add` of a gitignored
+    issues.jsonl fails, even though the config.yaml write persisted."""
+
+    def _patch(self, monkeypatch, get_value, set_rc=1):
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            is_get = cmd[:3] == ["bd", "config", "get"]
+            class R:
+                stdout = get_value if is_get else ""
+                stderr = "" if is_get else "Error: auto-export: git add failed"
+                returncode = 0 if is_get else set_rc
+            return R()
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        return calls
+
+    def test_succeeds_when_readback_matches_despite_set_rc1(self, tmp_path, monkeypatch, capsys):
+        self._patch(monkeypatch, get_value="false\n", set_rc=1)
+        assert bootstrap._set_bd_config(tmp_path, "export.auto", "false") is True
+        assert "WARNING" not in capsys.readouterr().out
+
+    def test_warns_when_readback_mismatches(self, tmp_path, monkeypatch, capsys):
+        self._patch(monkeypatch, get_value="true\n", set_rc=0)
+        assert bootstrap._set_bd_config(tmp_path, "export.auto", "false") is False
+        assert "WARNING" in capsys.readouterr().out
+
+    def test_no_false_alarm_when_readback_unavailable(self, tmp_path, monkeypatch, capsys):
+        self._patch(monkeypatch, get_value="", set_rc=1)
+        assert bootstrap._set_bd_config(tmp_path, "export.auto", "false") is True
+        assert "WARNING" not in capsys.readouterr().out
+
+    def test_configure_sets_git_add_before_auto(self, tmp_path, monkeypatch, capsys):
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            class R:
+                stdout = "false" if cmd[:3] == ["bd", "config", "get"] else ""
+                stderr = ""
+                returncode = 0
+            return R()
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
+        configure_beads_sync(tmp_path)
+        sets = [c for c in calls if c[:3] == ["bd", "config", "set"]]
+        ga = next(i for i, c in enumerate(sets) if c[3] == "export.git-add")
+        au = next(i for i, c in enumerate(sets) if c[3] == "export.auto")
+        assert ga < au
+
+
 class TestInstallerSubprocessHardening:
     def test_install_subprocess_sets_timeout_and_stdin(self, tmp_path, monkeypatch, capsys):
         calls = []

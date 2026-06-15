@@ -410,18 +410,19 @@ class ChangeRecorder:
 
 _SUMMARY_VERB = {"new": "new", "overwritten": "updated", "appended": "appended",
                  "removed": "removed", "kept": "kept"}
-_SUMMARY_ORDER = ["new", "updated", "appended", "removed", "kept"]
+# Display order, keyed by RAW action (same vocabulary as _SUMMARY_VERB keys).
+_SUMMARY_ORDER = ["new", "overwritten", "appended", "removed", "kept"]
 
 
 def summarize_changes(changes_slice) -> str:
     """One-line step summary from a slice of recorder.changes (verb-counted)."""
     tally = {}
     for c in changes_slice:
-        verb = _SUMMARY_VERB.get(c["action"], c["action"])
-        tally[verb] = tally.get(verb, 0) + 1
+        tally[c["action"]] = tally.get(c["action"], 0) + 1
     if not tally:
         return "no changes"
-    return " · ".join(f"{tally[v]} {v}" for v in _SUMMARY_ORDER if v in tally)
+    return " · ".join(f"{tally[a]} {_SUMMARY_VERB.get(a, a)}"
+                      for a in _SUMMARY_ORDER if a in tally)
 
 
 # ============================================================================

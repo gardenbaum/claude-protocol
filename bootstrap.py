@@ -390,7 +390,7 @@ class ChangeRecorder:
             "your edits will be replaced" if c.get("label") == "locally-modified" else "")
         note = f"   {text}" if text else ""
         counts = "" if c["action"] == "new" else f"   +{c['added']} -{c['removed']}"
-        return f"  {verb:<7} {c['key']:<{width}}{note}{counts}"
+        return f"  {verb:<7} {c['key']:<{width}}{note}{counts}".rstrip()
 
     def _headline(self, n):
         plural = "s" if n != 1 else ""
@@ -1197,7 +1197,7 @@ Next steps:
 """)
         return 0
     except Exception as e:
-        # Mid-step failure: surface the [CHANGES] report so the user sees
+        # Mid-step failure: surface the change report so the user sees
         # what landed, and best-effort save the manifest so the next run
         # doesn't churn through those files as 'modified'.
         print(f"\n[BOOTSTRAP FAILED] {type(e).__name__}: {e}")

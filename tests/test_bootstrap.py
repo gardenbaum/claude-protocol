@@ -35,6 +35,16 @@ from bootstrap import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _color_off_by_default():
+    """Every test starts and ends with color disabled, so no test that enables
+    color (TestColor) can leak ANSI state into report-asserting tests — even
+    under pytest-randomly / pytest -s where class order isn't guaranteed."""
+    bootstrap.configure_color("never")
+    yield
+    bootstrap.configure_color("never")
+
+
 # ============================================================================
 # infer_project_name
 # ============================================================================
@@ -1776,11 +1786,6 @@ class TestSummarizeChanges:
 # ============================================================================
 
 class TestColor:
-    @pytest.fixture(autouse=True)
-    def _reset_color(self):
-        yield
-        bootstrap.configure_color("never")  # never leak color state to other tests
-
     def test_paint_noop_when_disabled(self, monkeypatch):
         monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", False)
         assert bootstrap._paint("hi", "green") == "hi"
@@ -1820,7 +1825,8 @@ class TestColor:
 
     def test_auto_off_when_not_a_tty(self, monkeypatch):
         monkeypatch.delenv("NO_COLOR", raising=False)
-        bootstrap.configure_color("auto")  # pytest stdout is not a tty
+        monkeypatch.setattr(bootstrap.sys.stdout, "isatty", lambda: False)
+        bootstrap.configure_color("auto")
         assert bootstrap._COLOR_ENABLED is False
 
     def test_report_line_colors_verb_and_counts(self, monkeypatch):

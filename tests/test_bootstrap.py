@@ -1505,9 +1505,19 @@ class TestChangeRecorder:
         rec.put_file(dest, b"v2\n", "rules/r.md")
         assert rec.changes[-1]["label"] == "pristine"
 
-        dest.write_bytes(b"user edit\n")
-        rec.put_file(dest, b"v3\n", "rules/r.md")
-        assert rec.changes[-1]["label"] == "locally-modified"
+    def test_record_skip_adds_kept_change_no_write(self, tmp_path):
+        rec = self._rec(tmp_path)
+        dest = tmp_path / ".claude" / "rules" / "x.md"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"user edited\n")
+        rec.record_skip("rules/x.md")
+        assert dest.read_bytes() == b"user edited\n"          # untouched
+        kept = rec.changes[-1]
+        assert kept["action"] == "kept"
+        assert kept["key"] == "rules/x.md"
+        assert kept["label"] == "locally-modified"
+        assert kept["backup"] is None
+        assert not (rec.backup_root / "overwritten").exists()  # no backup dir
 
     def test_dry_run_writes_nothing(self, tmp_path):
         rec = self._rec(tmp_path, dry_run=True)

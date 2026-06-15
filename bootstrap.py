@@ -376,6 +376,11 @@ class ChangeRecorder:
                 self.manifest["files"][key] = bytes_sha256(new_bytes)
         return action
 
+    def record_skip(self, key):
+        """Record a user-modified file that was NOT written (report-only)."""
+        self.changes.append({"key": key, "action": "kept", "label": "locally-modified",
+                             "added": 0, "removed": 0, "diff": [], "backup": None})
+
     @staticmethod
     def _summary_line(c):
         label = f"  {c['label']}" if c.get("label") else ""

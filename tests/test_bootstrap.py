@@ -1637,3 +1637,20 @@ class TestChangeRecorder:
         out = capsys.readouterr().out
         assert "[DRY-RUN] [CHANGES]" in out
         assert "backup: (none)" in out  # nothing backed up in dry-run
+
+
+class TestSummarizeChanges:
+    def _c(self, action):
+        return {"action": action, "key": "k", "label": None,
+                "added": 0, "removed": 0, "diff": [], "backup": None}
+
+    def test_empty_is_no_changes(self):
+        assert bootstrap.summarize_changes([]) == "no changes"
+
+    def test_counts_by_verb_in_order(self):
+        slice_ = [self._c("new"), self._c("overwritten"), self._c("overwritten"),
+                  self._c("appended"), self._c("kept"), self._c("kept")]
+        assert bootstrap.summarize_changes(slice_) == "1 new · 2 updated · 1 appended · 2 kept"
+
+    def test_only_updated(self):
+        assert bootstrap.summarize_changes([self._c("overwritten")]) == "1 updated"

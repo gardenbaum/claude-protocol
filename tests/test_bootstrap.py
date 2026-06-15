@@ -1355,7 +1355,7 @@ class TestSettingsMergePreservesBdHook:
 
 
 class TestSettingsParseFailureBackup:
-    def test_unparseable_settings_backed_up_then_replaced(self, tmp_path, monkeypatch):
+    def test_unparseable_settings_backed_up_then_replaced(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(bootstrap, "TEMPLATES_DIR", _fake_templates_dir(tmp_path))
         (tmp_path / ".claude").mkdir(parents=True)
         broken = tmp_path / ".claude" / "settings.json"
@@ -1367,6 +1367,9 @@ class TestSettingsParseFailureBackup:
         # broken original backed up byte-exact
         backup = rec.backup_root / "overwritten" / ".claude" / "settings.json"
         assert backup.read_text() == "{ this is not valid json "
+        # merge-failure surfaced in the report, not silently replaced
+        rec.print_report()
+        assert "could not merge — replaced" in capsys.readouterr().out
 
 
 class TestClaudeMdAppendIdempotent:

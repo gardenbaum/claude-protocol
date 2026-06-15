@@ -386,7 +386,9 @@ class ChangeRecorder:
     @staticmethod
     def _report_line(c, width):
         verb = ChangeRecorder._VERB.get(c["action"], c["action"].upper())
-        note = "   your edits will be replaced" if c.get("label") == "locally-modified" else ""
+        text = c.get("note") or (
+            "your edits will be replaced" if c.get("label") == "locally-modified" else "")
+        note = f"   {text}" if text else ""
         counts = "" if c["action"] == "new" else f"   +{c['added']} -{c['removed']}"
         return f"  {verb:<7} {c['key']:<{width}}{note}{counts}"
 
@@ -1014,7 +1016,9 @@ def _write_settings(recorder):
         )
         recorder.put_file(settings_dest, _json_bytes(merged), "settings.json")
     except Exception:
-        recorder.put_file(settings_dest, _json_bytes(new_settings), "settings.json")
+        action = recorder.put_file(settings_dest, _json_bytes(new_settings), "settings.json")
+        if action != "unchanged":
+            recorder.changes[-1]["note"] = "could not merge — replaced"
 
 
 def _write_claude_md(recorder, project_name):

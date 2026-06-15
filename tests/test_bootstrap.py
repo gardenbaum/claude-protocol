@@ -1618,9 +1618,10 @@ class TestChangeRecorder:
         rec.put_file(dest, b"line1\nCHANGED\n", "hooks/x.cjs")
         rec.print_report()
         out = capsys.readouterr().out
-        assert "[CHANGES]" in out
-        assert "overwritten" in out
+        assert "1 file changed" in out
+        assert "UPDATE" in out
         assert "hooks/x.cjs" in out
+        assert "+1 -1" in out
         assert "\n-line2\n" in out and "\n+CHANGED\n" in out  # full diff present
 
     def test_report_no_diff_suppresses_full_diff(self, tmp_path, capsys):
@@ -1638,8 +1639,7 @@ class TestChangeRecorder:
         rec = self._rec(tmp_path)
         rec.print_report()
         out = capsys.readouterr().out
-        assert "[CHANGES]" in out
-        assert "no changes" in out
+        assert "No changes" in out
 
     def test_report_dry_run_prefix(self, tmp_path, capsys):
         rec = self._rec(tmp_path, dry_run=True)
@@ -1649,8 +1649,42 @@ class TestChangeRecorder:
         rec.put_file(dest, b"b\n", "hooks/x.cjs")
         rec.print_report()
         out = capsys.readouterr().out
-        assert "[DRY-RUN] [CHANGES]" in out
-        assert "backup: (none)" in out  # nothing backed up in dry-run
+        assert "DRY-RUN" in out
+        assert "would change" in out
+        assert "backup:" not in out  # no backup line in dry-run
+
+    def test_report_kept_section_lists_user_modified(self, tmp_path, capsys):
+        rec = self._rec(tmp_path)
+        rec.record_skip("rules/beads-workflow.md")
+        rec.record_skip("rules/debugging-standard.md")
+        rec.print_report()
+        out = capsys.readouterr().out
+        assert "KEPT" in out
+        assert "rules/beads-workflow.md" in out
+        assert "rules/debugging-standard.md" in out
+        assert "No changes" in out  # kept does not count as a change
+
+    def test_report_note_only_on_locally_modified(self, tmp_path, capsys):
+        rec = bootstrap.ChangeRecorder(
+            tmp_path, {"files": {"hooks/x.cjs": "sha256:doesnotmatch"}}, force=True)
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"user edited\n")
+        rec.put_file(dest, b"new\n", "hooks/x.cjs")  # label -> locally-modified
+        rec.print_report()
+        out = capsys.readouterr().out
+        assert "your edits will be replaced" in out
+
+    def test_report_pristine_has_no_note(self, tmp_path, capsys):
+        rec = bootstrap.ChangeRecorder(
+            tmp_path, {"files": {"hooks/x.cjs": bootstrap.content_sha256("old\n")}})
+        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
+        dest.parent.mkdir(parents=True)
+        dest.write_bytes(b"old\n")
+        rec.put_file(dest, b"new\n", "hooks/x.cjs")  # label -> pristine
+        rec.print_report()
+        out = capsys.readouterr().out
+        assert "your edits will be replaced" not in out
 
 
 class TestSummarizeChanges:

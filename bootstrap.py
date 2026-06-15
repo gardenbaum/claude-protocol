@@ -381,11 +381,24 @@ class ChangeRecorder:
         self.changes.append({"key": key, "action": "kept", "label": "locally-modified",
                              "added": 0, "removed": 0, "diff": [], "backup": None})
 
-    @staticmethod
-    def _summary_line(c):
-        label = f"  {c['label']}" if c.get("label") else ""
-        counts = "" if c["action"] == "new" else f"  +{c['added']} -{c['removed']}"
-        return f"  {c['action']:<12} {c['key']}{label}{counts}"
+    _VERB = {"overwritten": "UPDATE", "new": "NEW", "appended": "APPEND", "removed": "REMOVE"}
+
+    @classmethod
+    def _report_line(cls, c, width):
+        verb = cls._VERB.get(c["action"], c["action"].upper())
+        note = "   your edits will be replaced" if c.get("label") == "locally-modified" else ""
+        counts = "" if c["action"] == "new" else f"   +{c['added']} -{c['removed']}"
+        return f"  {verb:<7} {c['key']:<{width}}{note}{counts}"
+
+    def _headline(self, n):
+        plural = "s" if n != 1 else ""
+        if self.dry_run:
+            return (f"DRY-RUN — {n} file{plural} would change, nothing written"
+                    if n else "DRY-RUN — no changes, everything up to date")
+        if not n:
+            return "No changes — everything up to date"
+        backup = f"   backup: {self.backup_root}" if self._backup_created else ""
+        return f"{n} file{plural} changed{backup}"
 
     def _print_diffs(self, changed):
         for c in changed:
@@ -395,18 +408,24 @@ class ChangeRecorder:
                     print(line)
 
     def print_report(self):
-        changed = [c for c in self.changes if c["action"] != "unchanged"]
-        tally = {}
-        for c in changed:
-            tally[c["action"]] = tally.get(c["action"], 0) + 1
-        summary = ", ".join(f"{n} {a}" for a, n in sorted(tally.items())) or "no changes"
-        backup = str(self.backup_root) if self._backup_created else "(none)"
-        prefix = "[DRY-RUN] " if self.dry_run else ""
-        print(f"\n{prefix}[CHANGES] {summary}   backup: {backup}")
-        for c in changed:
-            print(self._summary_line(c))
-        if not self.no_diff:
-            self._print_diffs(changed)
+        changed = [c for c in self.changes if c["action"] not in ("unchanged", "kept")]
+        kept = [c for c in self.changes if c["action"] == "kept"]
+        print(f"\n{self._headline(len(changed))}")
+        if changed:
+            width = max(len(c["key"]) for c in changed)
+            print("")
+            for c in changed:
+                print(self._report_line(c, width))
+        if kept:
+            print("\n  KEPT (you modified these — new version staged in .claude/.upgrades/):")
+            for c in kept:
+                print(f"    {c['key']}")
+        if changed:
+            if self.dry_run:
+                print("\n  Run without --dry-run to apply · --no-diff hides diffs")
+            if not self.no_diff:
+                print("\n  ── diffs ──")
+                self._print_diffs(changed)
 
 
 # ============================================================================

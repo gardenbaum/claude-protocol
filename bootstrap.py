@@ -22,6 +22,7 @@ import sys
 import json
 import difflib
 import hashlib
+import re
 import shutil
 import tempfile
 import subprocess
@@ -339,7 +340,19 @@ class ChangeRecorder:
             raise
 
     def _do_backup(self, dest, old_bytes):
-        rel = dest.resolve().relative_to(self.project_dir)
+        dest = Path(dest)
+        # resolve() normalises macOS /var -> /private/var for the common case;
+        # absolute() handles a managed file that is a symlink pointing OUTSIDE
+        # the project (resolve() would escape project_dir and raise ValueError).
+        rel = None
+        for candidate in (dest.resolve(), dest.absolute()):
+            try:
+                rel = candidate.relative_to(self.project_dir)
+                break
+            except ValueError:
+                continue
+        if rel is None:
+            rel = Path(dest.name)  # last resort: flat name, never crash
         path = self._ensure_backup_dir() / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(old_bytes)
@@ -855,7 +868,14 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
             ("go", ["go", "install", "github.com/gastownhall/beads/cmd/bd@latest"]),
         ]:
             if shutil.which(cmd[0]):
-                result = subprocess.run(cmd, capture_output=True, text=True, shell=_SHELL)
+                try:
+                    result = subprocess.run(
+                        cmd, capture_output=True, text=True, shell=_SHELL,
+                        stdin=subprocess.DEVNULL, timeout=180,
+                    )
+                except subprocess.TimeoutExpired:
+                    print(f"  - {method} install timed out, trying next method...")
+                    continue
                 if result.returncode == 0:
                     print(f"  - Installed via {method}")
                     break
@@ -997,7 +1017,8 @@ def copy_agents(recorder, project_name):
     print("\n[2/6] Agents", end="")
     start = len(recorder.changes)
     agents_dir = recorder.project_dir / ".claude" / "agents"
-    agents_dir.mkdir(parents=True, exist_ok=True)
+    if not recorder.dry_run:
+        agents_dir.mkdir(parents=True, exist_ok=True)
     replacements = {"[Project]": project_name}
     for agent_file in (TEMPLATES_DIR / "agents").glob("*.md"):
         dest = agents_dir / agent_file.name
@@ -1007,7 +1028,8 @@ def copy_agents(recorder, project_name):
         if ok:
             recorder.put_file(dest, new_content.encode("utf-8"), rel_key)
         else:
-            save_upgrade(recorder.project_dir, rel_key, new_content)
+            if not recorder.dry_run:
+                save_upgrade(recorder.project_dir, rel_key, new_content)
             recorder.record_skip(rel_key)
     print(f" ... {summarize_changes(recorder.changes[start:])}")
 
@@ -1017,7 +1039,8 @@ def copy_hooks(recorder):
     print("\n[3/6] Hooks", end="")
     start = len(recorder.changes)
     hooks_dir = recorder.project_dir / ".claude" / "hooks"
-    hooks_dir.mkdir(parents=True, exist_ok=True)
+    if not recorder.dry_run:
+        hooks_dir.mkdir(parents=True, exist_ok=True)
     for hook_file in (TEMPLATES_DIR / "hooks").glob("*.cjs"):
         dest = hooks_dir / hook_file.name
         recorder.put_file(dest, hook_file.read_bytes(), f"hooks/{hook_file.name}")
@@ -1032,7 +1055,8 @@ def _copy_rule(recorder, rule_file, rules_dir):
     if ok:
         recorder.put_file(dest, rule_file.read_bytes(), rel_key)
     else:
-        save_upgrade(recorder.project_dir, rel_key, rule_file.read_text(encoding="utf-8"))
+        if not recorder.dry_run:
+            save_upgrade(recorder.project_dir, rel_key, rule_file.read_text(encoding="utf-8"))
         recorder.record_skip(rel_key)
 
 
@@ -1041,7 +1065,8 @@ def copy_rules_and_skills(recorder, with_rules):
     print("\n[4/6] Rules & skills", end="")
     start = len(recorder.changes)
     rules_dir = recorder.project_dir / ".claude" / "rules"
-    rules_dir.mkdir(parents=True, exist_ok=True)
+    if not recorder.dry_run:
+        rules_dir.mkdir(parents=True, exist_ok=True)
     rules_src_dir = TEMPLATES_DIR / "rules"
 
     beads_src = rules_src_dir / "beads-workflow.md"
@@ -1063,19 +1088,59 @@ def _json_bytes(data: dict) -> bytes:
     return (json.dumps(data, indent=2) + "\n").encode("utf-8")
 
 
+_HOOK_SCRIPT_RE = re.compile(r"([\w.-]+\.cjs)")
+
+
+def _hook_command(entry: dict) -> str:
+    """Command string of a settings hook entry, or '' if absent/malformed."""
+    hooks = entry.get("hooks") if isinstance(entry, dict) else None
+    if not hooks:
+        return ""
+    return hooks[0].get("command", "") or ""
+
+
+def _hook_script_name(cmd: str) -> str:
+    """Basename of the .cjs script a hook command runs, or '' if none."""
+    m = _HOOK_SCRIPT_RE.search(cmd)
+    return m.group(1) if m else ""
+
+
+def _find_hook_index(bucket: list, matcher, script: str, cmd: str) -> int:
+    """Index in `bucket` of the entry for the same (matcher, .cjs script), or the
+    same exact command for non-.cjs hooks; -1 if none. Matcher-aware so one
+    script bound to several matchers (Edit + Write) keeps a slot per matcher."""
+    for i, h in enumerate(bucket):
+        hcmd = _hook_command(h)
+        if script:
+            same = h.get("matcher") == matcher and _hook_script_name(hcmd) == script
+        else:
+            same = hcmd == cmd
+        if same:
+            return i
+    return -1
+
+
 def _merge_settings(existing: dict, new_settings: dict) -> dict:
-    """Merge new hooks into existing by event, skipping commands already present."""
+    """Merge new hooks into existing, per event.
+
+    Dedup/replace by (matcher, .cjs script name) so a re-run never duplicates AND
+    an upgrade REPLACES an old `node .claude/hooks/X.cjs` entry with the new
+    `$CLAUDE_PROJECT_DIR`-based command for the same matcher+script (the
+    loader-path migration) — while a script bound to several matchers (Edit +
+    Write) keeps one entry per matcher. Non-.cjs hooks (e.g. `bd prime`) match by
+    exact command. Entries with no command are skipped (never appended blindly).
+    """
     for event, hooks_list in new_settings.get("hooks", {}).items():
-        existing.setdefault("hooks", {}).setdefault(event, [])
-        existing_commands = {
-            h["hooks"][0]["command"]
-            for h in existing["hooks"][event]
-            if h.get("hooks") and h["hooks"][0].get("command")
-        }
+        bucket = existing.setdefault("hooks", {}).setdefault(event, [])
         for hook in hooks_list:
-            cmd = hook.get("hooks", [{}])[0].get("command", "")
-            if cmd not in existing_commands:
-                existing["hooks"][event].append(hook)
+            cmd = _hook_command(hook)
+            if not cmd:
+                continue
+            idx = _find_hook_index(bucket, hook.get("matcher"), _hook_script_name(cmd), cmd)
+            if idx >= 0:
+                bucket[idx] = hook
+            else:
+                bucket.append(hook)
     return existing
 
 
@@ -1152,7 +1217,19 @@ def _path_is_tracked(project_dir: Path, rel: str) -> bool:
     return result.returncode == 0
 
 
-def setup_gitignore(project_dir: Path, jsonl: bool = False) -> None:
+def _report_gitignore_plan(gitignore_path: Path, entries: list) -> None:
+    """[dry-run] print what setup_gitignore would do; write nothing."""
+    if gitignore_path.exists():
+        lines = gitignore_path.read_text(encoding="utf-8").splitlines()
+        missing = [e for e in entries if e not in lines and e.rstrip("/") not in lines]
+        msg = f"would add: {', '.join(missing)}" if missing else "already configured"
+    else:
+        msg = f"would create .gitignore with: {', '.join(entries)}"
+    print(f"  - [dry-run] {msg}")
+    print("  DONE")
+
+
+def setup_gitignore(project_dir: Path, jsonl: bool = False, dry_run: bool = False) -> None:
     """Ensure .worktrees/ and .claude/.upgrades/ are in .gitignore.
 
     Default (Dolt-only): also ignore .beads/issues.jsonl — it is redundant with
@@ -1166,6 +1243,10 @@ def setup_gitignore(project_dir: Path, jsonl: bool = False) -> None:
     entries = [".worktrees/", ".claude/.upgrades/"]
     if not jsonl:
         entries.append(".beads/issues.jsonl")
+
+    if dry_run:
+        _report_gitignore_plan(gitignore_path, entries)
+        return
 
     if gitignore_path.exists():
         content = gitignore_path.read_text(encoding='utf-8')
@@ -1249,7 +1330,8 @@ def bootstrap_project(
     jsonl: bool = False,
 ) -> int:
     """Run bootstrap for a single project. Returns exit code (0 = success)."""
-    project_dir.mkdir(parents=True, exist_ok=True)
+    if not dry_run:
+        project_dir.mkdir(parents=True, exist_ok=True)
     resolved_name = project_name or infer_project_name(project_dir)
 
     print(f"\nBootstrapping beads orchestration for: {resolved_name}")
@@ -1276,7 +1358,7 @@ def bootstrap_project(
         copy_hooks(recorder)
         copy_rules_and_skills(recorder, with_rules)
         copy_settings_and_claude_md(recorder, resolved_name)
-        setup_gitignore(project_dir, jsonl=jsonl)
+        setup_gitignore(project_dir, jsonl=jsonl, dry_run=dry_run)
         recorder.print_report()
 
         # Read version from package.json (same package as bootstrap.py)

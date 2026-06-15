@@ -21,6 +21,8 @@ dist/
 build/
 .venv/
 .pytest_cache/
+.coverage
+htmlcov/
 
 # IDE
 .idea/

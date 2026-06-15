@@ -1905,3 +1905,142 @@ class TestColor:
         line = bootstrap.ChangeRecorder._report_line(c, 12)
         assert "\033[" not in line
         assert line == "  UPDATE  hooks/x.cjs    +6 -48"
+
+
+# ============================================================================
+# v3.8.1 review fixes (#1 hook path, #2 dry-run, #4 symlink backup, #5 installer)
+# ============================================================================
+
+class TestSetupGitignoreDryRun:
+    def test_dry_run_does_not_write_gitignore(self, tmp_path, capsys):
+        setup_gitignore(tmp_path, dry_run=True)
+        assert not (tmp_path / ".gitignore").exists()
+        assert "dry-run" in capsys.readouterr().out.lower()
+
+    def test_dry_run_does_not_append_to_existing(self, tmp_path, capsys):
+        gi = tmp_path / ".gitignore"
+        gi.write_text("node_modules/\n")
+        setup_gitignore(tmp_path, dry_run=True)
+        assert gi.read_text() == "node_modules/\n"
+
+
+class TestMergeSettingsHookPath:
+    def _entry(self, matcher, command):
+        return {"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
+
+    def test_relative_hook_migrated_to_project_dir(self):
+        """An upgrade must REPLACE an old `node .claude/hooks/X.cjs` entry with the
+        new $CLAUDE_PROJECT_DIR form for the same script — not duplicate it."""
+        existing = {"hooks": {"PreToolUse": [
+            self._entry("Bash", "node .claude/hooks/bash-guard.cjs")]}}
+        new = {"hooks": {"PreToolUse": [
+            self._entry("Bash", 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-guard.cjs"')]}}
+        merged = bootstrap._merge_settings(existing, new)
+        cmds = [h["hooks"][0]["command"] for h in merged["hooks"]["PreToolUse"]]
+        assert len(cmds) == 1
+        assert "$CLAUDE_PROJECT_DIR" in cmds[0]
+
+    def test_idempotent_no_duplicate_on_rerun(self):
+        new = {"hooks": {"PreToolUse": [
+            self._entry("Bash", 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-guard.cjs"')]}}
+        merged = bootstrap._merge_settings({}, json.loads(json.dumps(new)))
+        merged = bootstrap._merge_settings(merged, json.loads(json.dumps(new)))
+        assert len(merged["hooks"]["PreToolUse"]) == 1
+
+    def test_preserves_non_cjs_hook(self):
+        existing = {"hooks": {"SessionStart": [
+            {"hooks": [{"type": "command", "command": "bd prime --hook-json"}]}]}}
+        new = {"hooks": {"SessionStart": [
+            self._entry(None, 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.cjs"')]}}
+        merged = bootstrap._merge_settings(existing, new)
+        cmds = [h["hooks"][0]["command"] for h in merged["hooks"]["SessionStart"]]
+        assert any("bd prime" in c for c in cmds)
+        assert any("session-start.cjs" in c for c in cmds)
+        assert len(cmds) == 2
+
+    def test_skips_commandless_entry(self):
+        new = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{}]}]}}
+        merged = bootstrap._merge_settings({}, new)
+        merged = bootstrap._merge_settings(
+            merged, {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{}]}]}})
+        assert merged["hooks"]["PreToolUse"] == []
+
+    def test_template_settings_uses_project_dir(self):
+        content = (bootstrap.TEMPLATES_DIR / "settings.json").read_text(encoding="utf-8")
+        assert "$CLAUDE_PROJECT_DIR" in content
+        assert "node .claude/hooks/" not in content
+
+    def test_preserves_distinct_matchers_for_same_script(self):
+        """enforce-branch-before-edit.cjs is bound to BOTH Edit and Write in the
+        same event — merging must keep both matchers, not collapse them."""
+        cmd = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-branch-before-edit.cjs"'
+        new = {"hooks": {"PreToolUse": [
+            self._entry("Edit", cmd),
+            self._entry("Write", cmd),
+            self._entry("Bash", 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-guard.cjs"')]}}
+        merged = bootstrap._merge_settings({}, json.loads(json.dumps(new)))
+        assert [h["matcher"] for h in merged["hooks"]["PreToolUse"]] == ["Edit", "Write", "Bash"]
+        # idempotent: a second merge keeps exactly the same three matchers
+        merged = bootstrap._merge_settings(merged, json.loads(json.dumps(new)))
+        assert [h["matcher"] for h in merged["hooks"]["PreToolUse"]] == ["Edit", "Write", "Bash"]
+
+    def test_real_template_merge_keeps_all_matchers(self):
+        """Merging the real template into an existing install (itself) must not
+        drop any PreToolUse matcher."""
+        tmpl = json.loads((bootstrap.TEMPLATES_DIR / "settings.json").read_text(encoding="utf-8"))
+        merged = bootstrap._merge_settings(json.loads(json.dumps(tmpl)), json.loads(json.dumps(tmpl)))
+        matchers = [h.get("matcher") for h in merged["hooks"]["PreToolUse"]]
+        assert matchers.count("Edit") == 1
+        assert matchers.count("Write") == 1
+        assert matchers.count("Bash") == 1
+
+
+class TestBackupSymlinkOutsideProject:
+    def test_backup_of_symlink_target_outside_does_not_crash(self, tmp_path):
+        """A managed file that is a symlink pointing outside project_dir must not
+        crash the backup (resolve() used to raise ValueError)."""
+        external = tmp_path / "external.txt"
+        external.write_bytes(b"old-content")
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        link = proj / "settings.json"
+        link.symlink_to(external)
+        rec = bootstrap.ChangeRecorder(proj)
+        action = rec.put_file(link, b"new-content", "settings.json")
+        assert action == "overwritten"
+        backup = rec.changes[-1]["backup"]
+        assert backup is not None and backup.read_bytes() == b"old-content"
+
+
+class TestBootstrapDryRunNoSideEffects:
+    def test_dry_run_does_not_create_project_dir(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(bootstrap, "install_beads",
+                            lambda pd, dry_run=False, jsonl=False: True)
+        target = tmp_path / "does-not-exist"
+        rc = bootstrap.bootstrap_project(
+            project_dir=target, project_name="X", with_rules=False,
+            force=False, upgrade=True, dry_run=True)
+        assert rc == 0
+        assert not target.exists()
+
+
+class TestInstallerSubprocessHardening:
+    def test_install_subprocess_sets_timeout_and_stdin(self, tmp_path, monkeypatch, capsys):
+        calls = []
+        class R:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return R()
+        monkeypatch.setattr(bootstrap.shutil, "which",
+                            lambda c: None if c == "bd" else "/usr/bin/" + c)
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
+        (tmp_path / ".beads").mkdir()  # skip bd init
+        install_beads(tmp_path, dry_run=False)
+        install = next((k for c, k in calls if c and c[0] in ("brew", "npm", "go")), None)
+        assert install is not None, "an install method should have been attempted"
+        assert install.get("timeout")
+        assert install.get("stdin") is not None

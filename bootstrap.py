@@ -383,9 +383,9 @@ class ChangeRecorder:
 
     _VERB = {"overwritten": "UPDATE", "new": "NEW", "appended": "APPEND", "removed": "REMOVE"}
 
-    @classmethod
-    def _report_line(cls, c, width):
-        verb = cls._VERB.get(c["action"], c["action"].upper())
+    @staticmethod
+    def _report_line(c, width):
+        verb = ChangeRecorder._VERB.get(c["action"], c["action"].upper())
         note = "   your edits will be replaced" if c.get("label") == "locally-modified" else ""
         counts = "" if c["action"] == "new" else f"   +{c['added']} -{c['removed']}"
         return f"  {verb:<7} {c['key']:<{width}}{note}{counts}"

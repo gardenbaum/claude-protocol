@@ -1653,6 +1653,13 @@ class TestChangeRecorder:
         assert "would change" in out
         assert "backup:" not in out  # no backup line in dry-run
 
+    def test_report_dry_run_empty_says_no_changes(self, tmp_path, capsys):
+        rec = self._rec(tmp_path, dry_run=True)
+        rec.print_report()
+        out = capsys.readouterr().out
+        assert "DRY-RUN" in out
+        assert "no changes" in out
+
     def test_report_kept_section_lists_user_modified(self, tmp_path, capsys):
         rec = self._rec(tmp_path)
         rec.record_skip("rules/beads-workflow.md")

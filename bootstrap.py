@@ -832,7 +832,7 @@ def run_bd_doctor(project_dir: Path) -> None:
 # STEPS
 # ============================================================================
 
-def install_beads(project_dir: Path, dry_run: bool = False) -> bool:
+def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False) -> bool:
     """Install beads CLI and initialize .beads directory."""
     print("\n[1/6] Installing beads...")
 
@@ -840,9 +840,10 @@ def install_beads(project_dir: Path, dry_run: bool = False) -> bool:
         # Read-only: report intent, mutate nothing (no bd init/config/hooks).
         have_bd = bool(shutil.which("bd"))
         beads_exists = (project_dir / ".beads").exists()
+        sync_mode = "JSONL git-backup + Dolt" if jsonl else "Dolt-only (no JSONL)"
         print(f"  - beads CLI {'already installed' if have_bd else 'not found (would install)'}")
         print(f"  - .beads {'present' if beads_exists else 'would be initialized'}")
-        print("  - sync config + git backup would be wired (skipped in dry-run)")
+        print(f"  - sync config would be wired: {sync_mode} (skipped in dry-run)")
         print("  DONE")
         return True
 
@@ -879,12 +880,14 @@ def install_beads(project_dir: Path, dry_run: bool = False) -> bool:
             print("  - bd init timed out (Dolt server not running?)")
         if result is None or result.returncode != 0:
             beads_dir.mkdir(exist_ok=True)
-            (beads_dir / "issues.jsonl").touch()
+            if jsonl:
+                # Only seed the readable export when the user opted into it.
+                (beads_dir / "issues.jsonl").touch()
             print("  - Created .beads manually (run 'bd init' later with Dolt server running)")
 
-    # Wire automatic sync + readable git backup (bd 1.0.5: export.* default off,
-    # Dolt is the canonical store/sync). Best-effort; never fails the bootstrap.
-    configure_beads_sync(project_dir)
+    # Wire automatic sync. Dolt is the canonical store/sync; the JSONL export is
+    # opt-in (--jsonl). Best-effort; never fails the bootstrap.
+    configure_beads_sync(project_dir, jsonl=jsonl)
 
     print("  DONE")
     return True
@@ -950,20 +953,27 @@ def _install_shared_hooks(project_dir: Path) -> None:
             "install shared git hooks")
 
 
-def configure_beads_sync(project_dir: Path) -> bool:
-    """Wire automatic team sync + readable git backup (best-effort, never raises).
+def configure_beads_sync(project_dir: Path, jsonl: bool = False) -> bool:
+    """Wire automatic team sync (best-effort, never raises).
 
-    export.* commits readable .beads/issues.jsonl; dolt.auto-push pushes bead
-    writes to refs/dolt/data on origin; shared hooks pull on merge — sync loop.
+    Dolt is the source of truth: dolt.auto-push pushes bead writes to
+    refs/dolt/* on origin and shared hooks pull on merge — that's the sync loop.
+
+    The readable .beads/issues.jsonl export is OFF by default (redundant with
+    the Dolt remote, and a tracked/ignored mismatch breaks `git add`). Pass
+    jsonl=True (CLI: --jsonl) to opt back into committing it as a backup.
+    Setting it explicitly (not just leaving bd's default) lets an upgrade turn
+    a previously-forced export.auto=true back off on existing installs.
     """
     if not shutil.which("bd"):
         print("  - bd not available, skipping sync config "
               "(run sync setup later: bd hooks install --shared)")
         return False
-    ok = _run_bd(["config", "set", "export.auto", "true"], project_dir,
-                 "enable export.auto")
-    ok = _run_bd(["config", "set", "export.git-add", "true"], project_dir,
-                 "enable export.git-add") and ok
+    export_val = "true" if jsonl else "false"
+    ok = _run_bd(["config", "set", "export.auto", export_val], project_dir,
+                 f"set export.auto={export_val}")
+    ok = _run_bd(["config", "set", "export.git-add", export_val], project_dir,
+                 f"set export.git-add={export_val}") and ok
     ok = _run_bd(["config", "set", "dolt.auto-push", "true"], project_dir,
                  "enable dolt.auto-push") and ok
     origin = _git_origin_url(project_dir)
@@ -974,8 +984,9 @@ def configure_beads_sync(project_dir: Path) -> bool:
     else:
         print("  - no git origin; Dolt sync stays local until a remote is added")
     _install_shared_hooks(project_dir)
+    mode = "JSONL git-backup + Dolt remote" if jsonl else "Dolt remote (Dolt-only, no JSONL)"
     if ok:
-        print("  - Sync configured (JSONL git-backup + Dolt remote + shared hooks)")
+        print(f"  - Sync configured ({mode} + shared hooks)")
     else:
         print("  - Sync setup attempted (some steps may need bd/Dolt running)")
     return ok
@@ -1128,17 +1139,33 @@ def _path_is_gitignored(project_dir: Path, rel: str) -> bool:
     return result.returncode == 0
 
 
-def setup_gitignore(project_dir: Path) -> None:
+def _path_is_tracked(project_dir: Path, rel: str) -> bool:
+    """True if `rel` is git-tracked in project_dir. Read-only; never raises."""
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "--error-unmatch", rel], cwd=project_dir,
+            capture_output=True, text=True, shell=_SHELL,
+            stdin=subprocess.DEVNULL, timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    return result.returncode == 0
+
+
+def setup_gitignore(project_dir: Path, jsonl: bool = False) -> None:
     """Ensure .worktrees/ and .claude/.upgrades/ are in .gitignore.
 
-    .beads/ is intentionally NOT ignored — the readable .beads/issues.jsonl
-    export must stay git-tracked as a backup (bd 1.0.5: opt-in export, no stray
-    root /issues.jsonl). Dolt runtime/binary files are excluded by
-    .beads/.gitignore (written by bd init).
+    Default (Dolt-only): also ignore .beads/issues.jsonl — it is redundant with
+    the Dolt remote and only causes `git add` conflicts. With jsonl=True the
+    readable export stays git-tracked as a backup, and we instead WARN if the
+    user has it ignored (that would silently break bd auto-export). Dolt
+    runtime/binary files are excluded by .beads/.gitignore (written by bd init).
     """
     print("\n[6/6] Setting up .gitignore...")
     gitignore_path = project_dir / ".gitignore"
     entries = [".worktrees/", ".claude/.upgrades/"]
+    if not jsonl:
+        entries.append(".beads/issues.jsonl")
 
     if gitignore_path.exists():
         content = gitignore_path.read_text(encoding='utf-8')
@@ -1158,19 +1185,25 @@ def setup_gitignore(project_dir: Path) -> None:
         else:
             print("  - Already configured")
     else:
-        gitignore_path.write_text(
-            "# Beads orchestration\n.worktrees/\n.claude/.upgrades/\n",
-            encoding='utf-8',
-        )
+        body = "".join(f"{e}\n" for e in entries)
+        gitignore_path.write_text(f"# Beads orchestration\n{body}", encoding='utf-8')
         print("  - Created .gitignore")
 
-    # A pre-existing ignore of the readable export breaks bd auto-sync (the
-    # "paths are ignored" warnings in step [1/6]). We don't edit the user's
-    # rules — just surface the conflict with the fix.
-    if _path_is_gitignored(project_dir, ".beads/issues.jsonl"):
-        print("  - WARNING: .beads/issues.jsonl is gitignored — bd's readable "
-              "export/auto-sync will fail. Remove that ignore rule so the "
-              "backup stays git-tracked.")
+    if jsonl:
+        # In --jsonl mode the export must stay git-tracked. A pre-existing ignore
+        # of it breaks bd auto-sync (the "paths are ignored" warnings in [1/6]).
+        # We don't edit the user's rules — just surface the conflict with the fix.
+        if _path_is_gitignored(project_dir, ".beads/issues.jsonl"):
+            print("  - WARNING: .beads/issues.jsonl is gitignored — bd's readable "
+                  "export/auto-sync will fail. Remove that ignore rule so the "
+                  "backup stays git-tracked.")
+    elif _path_is_tracked(project_dir, ".beads/issues.jsonl"):
+        # Default (Dolt-only): the file is now ignored, but a previous install may
+        # have committed it — ignoring alone won't untrack it. Only nudge when it
+        # is actually tracked, so the `git rm --cached` advice can't misfire.
+        print("  - NOTE: .beads/issues.jsonl is now gitignored (Dolt is the source "
+              "of truth) but still git-tracked. Stop tracking it: "
+              "git rm --cached .beads/issues.jsonl")
 
     print("  DONE")
 
@@ -1213,6 +1246,7 @@ def _print_cleanup_report(report: dict, dry_run: bool) -> None:
 def bootstrap_project(
     project_dir: Path, project_name: str | None, with_rules: bool,
     force: bool, upgrade: bool, dry_run: bool, no_diff: bool = False,
+    jsonl: bool = False,
 ) -> int:
     """Run bootstrap for a single project. Returns exit code (0 = success)."""
     project_dir.mkdir(parents=True, exist_ok=True)
@@ -1234,7 +1268,7 @@ def bootstrap_project(
     recorder = ChangeRecorder(project_dir, manifest, force=force,
                               dry_run=dry_run, no_diff=no_diff)
 
-    if not install_beads(project_dir, dry_run=dry_run):
+    if not install_beads(project_dir, dry_run=dry_run, jsonl=jsonl):
         return 1
 
     try:
@@ -1242,7 +1276,7 @@ def bootstrap_project(
         copy_hooks(recorder)
         copy_rules_and_skills(recorder, with_rules)
         copy_settings_and_claude_md(recorder, resolved_name)
-        setup_gitignore(project_dir)
+        setup_gitignore(project_dir, jsonl=jsonl)
         recorder.print_report()
 
         # Read version from package.json (same package as bootstrap.py)
@@ -1300,6 +1334,7 @@ Next steps:
 
 def run_batch_upgrade(
     parent_dir: Path, with_rules: bool, force: bool, dry_run: bool, no_diff: bool = False,
+    jsonl: bool = False,
 ) -> int:
     """Iterate direct subdirs of parent_dir that contain .beads/ and upgrade each."""
     if not parent_dir.exists() or not parent_dir.is_dir():
@@ -1320,6 +1355,7 @@ def run_batch_upgrade(
             rc = bootstrap_project(
                 project_dir=child, project_name=None, with_rules=with_rules,
                 force=force, upgrade=True, dry_run=dry_run, no_diff=no_diff,
+                jsonl=jsonl,
             )
             if rc == 0:
                 upgraded += 1
@@ -1348,6 +1384,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print plan without writing anything")
     parser.add_argument("--no-diff", action="store_true", help="Suppress full per-file diffs (summary + backups still shown)")
     parser.add_argument("--all", dest="all_parent", default=None, metavar="PARENT_DIR", help="Batch upgrade: iterate direct subdirs of PARENT_DIR that contain .beads/. Implies --upgrade.")
+    parser.add_argument("--jsonl", action="store_true", help="Opt into the readable .beads/issues.jsonl git-backup (default: Dolt-only sync, JSONL export disabled)")
     parser.add_argument("--color", dest="color", action="store_const", const="always", default="auto", help="Force ANSI color output (default: auto-detect a TTY)")
     parser.add_argument("--no-color", dest="color", action="store_const", const="never", help="Disable ANSI color output (also honors the NO_COLOR env var)")
     args = parser.parse_args()
@@ -1359,6 +1396,7 @@ def main():
         sys.exit(run_batch_upgrade(
             parent_dir=parent, with_rules=args.with_rules,
             force=args.force, dry_run=args.dry_run, no_diff=args.no_diff,
+            jsonl=args.jsonl,
         ))
 
     project_dir = Path(args.project_dir).resolve()
@@ -1366,6 +1404,7 @@ def main():
         project_dir=project_dir, project_name=args.project_name,
         with_rules=args.with_rules, force=args.force,
         upgrade=args.upgrade, dry_run=args.dry_run, no_diff=args.no_diff,
+        jsonl=args.jsonl,
     ))
 
 

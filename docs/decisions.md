@@ -305,3 +305,28 @@ clones run `bd bootstrap`. The `/issues.jsonl` gitignore guard is removed;
 Worktree label is `local` (not `none`); `bd worktree remove` works with safety
 checks (the "u51/Windows" claim was unsourced); `closed` is the status and `done`
 a category; the verbosity docstring now matches the enforced 25 lines / 1200 chars.
+
+### 8.4 JSONL export OFF by default — Dolt-only is the default sync (supersedes 8.2's default)
+
+8.2 made the bootstrap force `export.auto/git-add=true` so a readable
+`.beads/issues.jsonl` rides in every commit. In practice that default fights the
+Dolt remote it sits next to: bd is the source of truth and already syncs the full
+database (history + deletions) via `bd dolt push` to `refs/dolt/*` on origin, so
+the committed JSONL is redundant. Worse, the moment a user gitignores the file
+(a reasonable "I don't want this in my tree" reaction) bd's `export.git-add` tries
+to `git add` an ignored path and **every** mutation, plus `bd prime` at
+SessionStart/PreCompact, spews `auto-export: git add failed`.
+
+**Decision:** the default is now **Dolt-only, JSONL export OFF**. `configure_beads_sync`
+sets `export.auto=false` + `export.git-add=false` (still `dolt.auto-push=true` +
+Dolt remote + shared hooks), and `setup_gitignore` adds `.beads/issues.jsonl` to
+`.gitignore`. The capability is preserved as an explicit opt-in: `--jsonl` (CLI:
+`init --jsonl` / `upgrade --jsonl`) restores 8.2's behavior (export on, file kept
+tracked, and the "is it ignored?" warning).
+
+**Why set the values explicitly instead of relying on bd's own off-by-default:**
+an upgrade must actively turn `export.auto=true` back to `false` on installs that
+8.2 already flipped on (e.g. existing projects) — leaving the keys unset would
+leave those installs broken. The `.beads/issues.jsonl` gitignore entry is additive
+and idempotent; if the file was previously committed, the bootstrap prints a NOTE
+to run `git rm --cached .beads/issues.jsonl` (it never rewrites the user's git index).

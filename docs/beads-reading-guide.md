@@ -44,8 +44,8 @@ not read through**. The commands our rule depends on:
 - `worktree.md` — `bd worktree create` (the rule bans raw `git worktree add`)
 - `dep.md · epic.md · children.md` — epic/child structure and dependencies
 - `prime.md · context.md` — session bootstrap (`bd prime`)
-- `init.md · bootstrap.md · config.md` — setup + `export.git-add false` (the stray
-  `issues.jsonl` protection the rule and our bootstrap.py rely on)
+- `init.md · bootstrap.md · config.md` — setup + the `export.*` keys our bootstrap
+  sets (`export.auto/git-add false` by default → Dolt-only sync; `--jsonl` flips them on)
 
 ---
 

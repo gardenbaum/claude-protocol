@@ -303,9 +303,11 @@ task completion the agent runs `bd dolt push` (one prescribed step) to push the 
 database (history under `refs/dolt/data` on origin) — this is the deterministic sync
 so reviewers and fresh clones see your beads. On the receiving side `git pull` fires
 the committed post-merge hook to pull Dolt; `dolt.auto-push=true` is also set but is
-only eventual, so the explicit `bd dolt push` is what guarantees delivery. A readable
-`.beads/issues.jsonl` is committed as a backup. On a fresh clone run `bd bootstrap` to
-pull the bead history.
+only eventual, so the explicit `bd dolt push` is what guarantees delivery. The readable
+`.beads/issues.jsonl` export is **off by default** (Dolt is the source of truth, so the
+file is redundant and only causes `git add` conflicts); pass `--jsonl` to `init`/`upgrade`
+if you want it committed as a human-readable backup. On a fresh clone run `bd bootstrap`
+to pull the bead history.
 
 ## Credits
 

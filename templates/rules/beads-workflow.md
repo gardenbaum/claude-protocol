@@ -60,7 +60,7 @@ Don't try to fix it now (unless trivial). Create the bead so it's not forgotten.
 
    **The `local` label is normal.** `bd worktree list` shows `local` for the worktree (and `shared` for `(main)`); `bd worktree info` shows `local (no redirect)`. The database is still shared — `bd list` from inside the worktree sees the shared tasks. Do NOT treat `local` as breakage. (`none` would mean a worktree with no beads at all.)
 
-   **Bead state from the worktree is shared automatically.** Mutations write to the one shared `.beads` Dolt database (every worktree sees it); `.beads/issues.jsonl` travels in commits as a readable backup, and `git pull` pulls teammates' bead changes via the post-merge hook. Pushing YOUR bead changes to origin is the explicit `bd dolt push` in Task Completion step 3 — `dolt.auto-push` alone is only eventual.
+   **Bead state from the worktree is shared automatically.** Mutations write to the one shared `.beads` Dolt database (every worktree sees it); Dolt is the source of truth and `git pull` pulls teammates' bead changes via the post-merge hook. Pushing YOUR bead changes to origin is the explicit `bd dolt push` in Task Completion step 3 — `dolt.auto-push` alone is only eventual. (The readable `.beads/issues.jsonl` export is off by default and gitignored; enable it at install with `--jsonl` if you want a committed text backup.)
 3. Claim the work (atomic assign + in_progress): `bd update {BEAD_ID} --claim`
 4. If this is a child of an epic — check epic status. If epic is still `open`, mark it too: `bd update {EPIC_ID} --status in_progress`
 5. Read bead context: `bd show {BEAD_ID}` and `bd comments {BEAD_ID}`

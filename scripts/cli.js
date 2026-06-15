@@ -27,6 +27,7 @@ Options:
   --force          Overwrite all files regardless of user modifications
   --dry-run        Preview changes without writing (upgrade only)
   --no-diff        Suppress full per-file diffs (summary + backups still shown)
+  --jsonl          Commit the readable .beads/issues.jsonl backup (default: Dolt-only, no JSONL)
   --all <parent>   Batch upgrade: iterate subdirs of <parent> with .beads/ (upgrade only)
 
 Examples:

@@ -220,9 +220,16 @@ class TestSetupGitignore:
         assert ".beads/" not in lines
         assert ".beads" not in lines
 
-    def test_does_not_ignore_issues_jsonl(self, tmp_path, capsys):
-        """The readable .beads/issues.jsonl backup must stay git-tracked."""
+    def test_ignores_issues_jsonl_by_default(self, tmp_path, capsys):
+        """Default is Dolt-only sync — the redundant .beads/issues.jsonl export
+        is gitignored so it never rides in commits."""
         setup_gitignore(tmp_path)
+        lines = (tmp_path / ".gitignore").read_text().splitlines()
+        assert ".beads/issues.jsonl" in lines
+
+    def test_jsonl_mode_keeps_issues_jsonl_tracked(self, tmp_path, capsys):
+        """With --jsonl the readable backup must stay git-tracked (not ignored)."""
+        setup_gitignore(tmp_path, jsonl=True)
         content = (tmp_path / ".gitignore").read_text()
         assert "issues.jsonl" not in content
 
@@ -297,20 +304,49 @@ class TestSetupGitignore:
         content = (tmp_path / ".gitignore").read_text()
         assert content.count(".claude/.upgrades/") == 1
 
-    def test_warns_when_issues_jsonl_is_gitignored(self, tmp_path, monkeypatch, capsys):
-        """A pre-existing ignore of .beads/issues.jsonl breaks bd auto-export —
-        setup_gitignore must surface that, not stay silent."""
+    def test_warns_when_issues_jsonl_is_gitignored_in_jsonl_mode(self, tmp_path, monkeypatch, capsys):
+        """With --jsonl, a pre-existing ignore of .beads/issues.jsonl breaks bd
+        auto-export — setup_gitignore must surface that, not stay silent."""
         monkeypatch.setattr(bootstrap, "_path_is_gitignored",
                             lambda d, rel: rel == ".beads/issues.jsonl")
-        setup_gitignore(tmp_path)
+        setup_gitignore(tmp_path, jsonl=True)
         out = capsys.readouterr().out
         assert ".beads/issues.jsonl" in out
         assert "gitignored" in out
 
-    def test_no_conflict_warning_when_not_ignored(self, tmp_path, monkeypatch, capsys):
+    def test_no_conflict_warning_when_not_ignored_in_jsonl_mode(self, tmp_path, monkeypatch, capsys):
         monkeypatch.setattr(bootstrap, "_path_is_gitignored", lambda d, rel: False)
+        setup_gitignore(tmp_path, jsonl=True)
+        assert "gitignored" not in capsys.readouterr().out
+
+    def test_default_mode_never_warns_about_gitignore(self, tmp_path, monkeypatch, capsys):
+        """Default (Dolt-only) deliberately ignores issues.jsonl — it must never
+        emit the jsonl-mode 'gitignored' warning."""
+        monkeypatch.setattr(bootstrap, "_path_is_gitignored",
+                            lambda d, rel: rel == ".beads/issues.jsonl")
         setup_gitignore(tmp_path)
         assert "gitignored" not in capsys.readouterr().out
+
+    def test_default_mode_notes_untrack_when_jsonl_tracked(self, tmp_path, monkeypatch, capsys):
+        """If a previous install committed .beads/issues.jsonl, default mode must
+        tell the user to untrack it (ignoring alone won't)."""
+        monkeypatch.setattr(bootstrap, "_path_is_tracked",
+                            lambda d, rel: rel == ".beads/issues.jsonl")
+        setup_gitignore(tmp_path)
+        assert "git rm --cached .beads/issues.jsonl" in capsys.readouterr().out
+
+    def test_default_mode_no_note_when_jsonl_untracked(self, tmp_path, monkeypatch, capsys):
+        """No stray 'git rm --cached' advice when the file isn't tracked."""
+        monkeypatch.setattr(bootstrap, "_path_is_tracked", lambda d, rel: False)
+        setup_gitignore(tmp_path)
+        assert "git rm --cached" not in capsys.readouterr().out
+
+    def test_issues_jsonl_entry_idempotent(self, tmp_path, capsys):
+        """The default issues.jsonl ignore must not duplicate on re-run."""
+        setup_gitignore(tmp_path)
+        setup_gitignore(tmp_path)
+        content = (tmp_path / ".gitignore").read_text()
+        assert content.count(".beads/issues.jsonl") == 1
 
 
 # ============================================================================
@@ -344,14 +380,27 @@ class TestInstallBeadsDryRun:
         assert "dry-run" in capsys.readouterr().out.lower()
 
     def test_non_dry_run_still_configures(self, tmp_path, monkeypatch, capsys):
-        """Without dry-run the sync config is still wired (regression guard)."""
+        """Without dry-run the sync config is still wired (regression guard).
+        Default disables the JSONL export; Dolt auto-push is always on."""
         calls = self._record_runs(monkeypatch)
         monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
         (tmp_path / ".beads").mkdir()  # skip the bd-init branch
 
         install_beads(tmp_path, dry_run=False)
 
+        assert ["bd", "config", "set", "export.auto", "false"] in calls
+        assert ["bd", "config", "set", "dolt.auto-push", "true"] in calls
+
+    def test_jsonl_flag_threads_to_sync(self, tmp_path, monkeypatch, capsys):
+        """install_beads(jsonl=True) must enable the JSONL export downstream."""
+        calls = self._record_runs(monkeypatch)
+        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
+        (tmp_path / ".beads").mkdir()
+
+        install_beads(tmp_path, dry_run=False, jsonl=True)
+
         assert ["bd", "config", "set", "export.auto", "true"] in calls
+        assert ["bd", "config", "set", "export.git-add", "true"] in calls
 
 
 # ============================================================================
@@ -373,15 +422,26 @@ class TestConfigureBeadsSync:
         monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: origin)
         return calls
 
-    def test_enables_export_and_wires_sync(self, tmp_path, monkeypatch, capsys):
+    def test_default_disables_jsonl_export(self, tmp_path, monkeypatch, capsys):
+        """Default: Dolt-only. JSONL auto-export/staging is turned OFF; Dolt
+        remote + auto-push + shared hooks are still wired."""
         calls = self._patch(monkeypatch)
         result = configure_beads_sync(tmp_path)
+        assert result is True
+        assert ["bd", "config", "set", "export.auto", "false"] in calls
+        assert ["bd", "config", "set", "export.git-add", "false"] in calls
+        assert ["bd", "config", "set", "dolt.auto-push", "true"] in calls
+        assert ["bd", "dolt", "remote", "add", "origin", "git@github.com:o/r.git"] in calls
+        assert ["bd", "hooks", "install", "--shared"] in calls
+
+    def test_jsonl_flag_enables_export(self, tmp_path, monkeypatch, capsys):
+        """With jsonl=True the readable JSONL git-backup is enabled."""
+        calls = self._patch(monkeypatch)
+        result = configure_beads_sync(tmp_path, jsonl=True)
         assert result is True
         assert ["bd", "config", "set", "export.auto", "true"] in calls
         assert ["bd", "config", "set", "export.git-add", "true"] in calls
         assert ["bd", "config", "set", "dolt.auto-push", "true"] in calls
-        assert ["bd", "dolt", "remote", "add", "origin", "git@github.com:o/r.git"] in calls
-        assert ["bd", "hooks", "install", "--shared"] in calls
 
     def test_skips_dolt_remote_without_origin(self, tmp_path, monkeypatch, capsys):
         calls = self._patch(monkeypatch, origin=None)
@@ -1140,7 +1200,7 @@ class TestUpgradeFlag:
 
         # Stub out heavy steps so test stays fast & offline
         monkeypatch.setattr(bootstrap, "cleanup_obsolete", fake_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False, jsonl=False: True)
         monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
         monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
@@ -1170,7 +1230,7 @@ class TestUpgradeFlag:
             }
 
         monkeypatch.setattr(bootstrap, "cleanup_obsolete", fake_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False, jsonl=False: True)
         monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
         monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
@@ -1203,7 +1263,7 @@ class TestUpgradeFlag:
             }
 
         monkeypatch.setattr(bootstrap, "cleanup_obsolete", capture_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False, jsonl=False: True)
         monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
         monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
@@ -1291,7 +1351,7 @@ class TestBootstrapProjectErrorHandling:
         def boom(recorder, with_rules):
             raise RuntimeError("simulated mid-step failure")
 
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False, jsonl=False: True)
         monkeypatch.setattr(bootstrap, "copy_agents", fake_copy_agents)
         monkeypatch.setattr(bootstrap, "copy_hooks", fake_copy_hooks)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", boom)

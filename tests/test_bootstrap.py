@@ -15,6 +15,7 @@ from bootstrap import (
     copy_and_replace,
     setup_gitignore,
     configure_beads_sync,
+    install_beads,
     _from_package_json,
     _from_pyproject,
     _from_cargo,
@@ -285,6 +286,47 @@ class TestSetupGitignore:
 
         content = (tmp_path / ".gitignore").read_text()
         assert content.count(".claude/.upgrades/") == 1
+
+
+# ============================================================================
+# install_beads — dry-run must not mutate
+# ============================================================================
+
+class TestInstallBeadsDryRun:
+    class _FakeResult:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def _record_runs(self, monkeypatch):
+        calls = []
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return self._FakeResult()
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        return calls
+
+    def test_dry_run_writes_nothing(self, tmp_path, monkeypatch, capsys):
+        """--dry-run must not run bd init / config / hooks (no side effects)."""
+        calls = self._record_runs(monkeypatch)
+
+        result = install_beads(tmp_path, dry_run=True)
+
+        assert result is True
+        assert calls == []                          # no bd subprocess at all
+        assert not (tmp_path / ".beads").exists()   # nothing created on disk
+        assert "dry-run" in capsys.readouterr().out.lower()
+
+    def test_non_dry_run_still_configures(self, tmp_path, monkeypatch, capsys):
+        """Without dry-run the sync config is still wired (regression guard)."""
+        calls = self._record_runs(monkeypatch)
+        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
+        (tmp_path / ".beads").mkdir()  # skip the bd-init branch
+
+        install_beads(tmp_path, dry_run=False)
+
+        assert ["bd", "config", "set", "export.auto", "true"] in calls
 
 
 # ============================================================================
@@ -1073,7 +1115,7 @@ class TestUpgradeFlag:
 
         # Stub out heavy steps so test stays fast & offline
         monkeypatch.setattr(bootstrap, "cleanup_obsolete", fake_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False: True)
         monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
         monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
@@ -1103,7 +1145,7 @@ class TestUpgradeFlag:
             }
 
         monkeypatch.setattr(bootstrap, "cleanup_obsolete", fake_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False: True)
         monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
         monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
@@ -1136,7 +1178,7 @@ class TestUpgradeFlag:
             }
 
         monkeypatch.setattr(bootstrap, "cleanup_obsolete", capture_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False: True)
         monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
         monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
@@ -1224,7 +1266,7 @@ class TestBootstrapProjectErrorHandling:
         def boom(recorder, with_rules):
             raise RuntimeError("simulated mid-step failure")
 
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False: True)
         monkeypatch.setattr(bootstrap, "copy_agents", fake_copy_agents)
         monkeypatch.setattr(bootstrap, "copy_hooks", fake_copy_hooks)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", boom)

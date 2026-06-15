@@ -775,9 +775,19 @@ def run_bd_doctor(project_dir: Path) -> None:
 # STEPS
 # ============================================================================
 
-def install_beads(project_dir: Path) -> bool:
+def install_beads(project_dir: Path, dry_run: bool = False) -> bool:
     """Install beads CLI and initialize .beads directory."""
     print("\n[1/6] Installing beads...")
+
+    if dry_run:
+        # Read-only: report intent, mutate nothing (no bd init/config/hooks).
+        have_bd = bool(shutil.which("bd"))
+        beads_exists = (project_dir / ".beads").exists()
+        print(f"  - beads CLI {'already installed' if have_bd else 'not found (would install)'}")
+        print(f"  - .beads {'present' if beads_exists else 'would be initialized'}")
+        print("  - sync config + git backup would be wired (skipped in dry-run)")
+        print("  DONE")
+        return True
 
     if not shutil.which("bd"):
         print("  - beads CLI (bd) not found, installing...")
@@ -1146,7 +1156,7 @@ def bootstrap_project(
     recorder = ChangeRecorder(project_dir, manifest, force=force,
                               dry_run=dry_run, no_diff=no_diff)
 
-    if not install_beads(project_dir):
+    if not install_beads(project_dir, dry_run=dry_run):
         return 1
 
     try:

@@ -34,9 +34,40 @@ try:
 except ImportError:
     tomllib = None
 
+try:
+    import yaml as _yaml  # optional, used for omp/pi config.yml
+except ImportError:
+    _yaml = None
+
+try:
+    from adapters import (
+        CLAUDE as _CLAUDE,
+        CODEX as _CODEX,
+        OPENCODE as _OPENCODE,
+        PI as _PI,
+        OMP as _OMP,
+        OMO as _OMO,
+        ALL_ADAPTERS as _ALL_ADAPTERS,
+        HarnessAdapter as _HarnessAdapter,
+        resolve as _resolve_harnesses,
+        validate as _validate_harness,
+    )
+except ImportError:  # pragma: no cover - adapters.py must ship with bootstrap.py
+    _ALL_ADAPTERS = ()
+    _HarnessAdapter = None
+    _resolve_harnesses = None
+    _validate_harness = None
+
 _SHELL = sys.platform == "win32"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 TEMPLATES_DIR = SCRIPT_DIR / "templates"
+
+# Make sure the sibling `adapters.py` module is importable whether this file
+# is executed as a script (`python bootstrap.py …`) or imported as a module
+# (the pytest path). Inserting at index 0 keeps the bundled Python paths
+# in the list too.
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 
 # ---------------------------------------------------------------------------
@@ -1376,7 +1407,7 @@ def _print_cleanup_report(report: dict, dry_run: bool) -> None:
 def bootstrap_project(
     project_dir: Path, project_name: str | None, with_rules: bool,
     force: bool, upgrade: bool, dry_run: bool, no_diff: bool = False,
-    jsonl: bool = False,
+    jsonl: bool = False, harness: str = "claude",
 ) -> int:
     """Run bootstrap for a single project. Returns exit code (0 = success)."""
     if not dry_run:
@@ -1385,6 +1416,7 @@ def bootstrap_project(
 
     print(f"\nBootstrapping beads orchestration for: {resolved_name}")
     print(f"Directory: {project_dir}")
+    print(f"Harness adapter: {harness}")
     if force:
         print("Mode: FORCE (overwriting all files)")
     if upgrade:
@@ -1407,6 +1439,7 @@ def bootstrap_project(
         copy_hooks(recorder)
         copy_rules_and_skills(recorder, with_rules)
         copy_settings_and_claude_md(recorder, resolved_name)
+        install_harness_adapters(recorder, _resolve_harnesses(harness), resolved_name)
         setup_gitignore(project_dir, jsonl=jsonl, dry_run=dry_run)
         recorder.print_report()
 
@@ -1465,7 +1498,7 @@ Next steps:
 
 def run_batch_upgrade(
     parent_dir: Path, with_rules: bool, force: bool, dry_run: bool, no_diff: bool = False,
-    jsonl: bool = False,
+    jsonl: bool = False, harness: str = "claude",
 ) -> int:
     """Iterate direct subdirs of parent_dir that contain .beads/ and upgrade each."""
     if not parent_dir.exists() or not parent_dir.is_dir():
@@ -1486,7 +1519,7 @@ def run_batch_upgrade(
             rc = bootstrap_project(
                 project_dir=child, project_name=None, with_rules=with_rules,
                 force=force, upgrade=True, dry_run=dry_run, no_diff=no_diff,
-                jsonl=jsonl,
+                jsonl=jsonl, harness=harness,
             )
             if rc == 0:
                 upgraded += 1
@@ -1516,6 +1549,7 @@ def main():
     parser.add_argument("--no-diff", action="store_true", help="Suppress full per-file diffs (summary + backups still shown)")
     parser.add_argument("--all", dest="all_parent", default=None, metavar="PARENT_DIR", help="Batch upgrade: iterate direct subdirs of PARENT_DIR that contain .beads/. Implies --upgrade.")
     parser.add_argument("--jsonl", action="store_true", help="Opt into the readable .beads/issues.jsonl git-backup (default: Dolt-only sync, JSONL export disabled)")
+    parser.add_argument("--harness", default="claude", help="Harness adapter to install (claude, codex, opencode, pi, omp, omo, all). Default: claude (v3.x compat).")
     parser.add_argument("--color", dest="color", action="store_const", const="always", default="auto", help="Force ANSI color output (default: auto-detect a TTY)")
     parser.add_argument("--no-color", dest="color", action="store_const", const="never", help="Disable ANSI color output (also honors the NO_COLOR env var)")
     args = parser.parse_args()
@@ -1527,7 +1561,7 @@ def main():
         sys.exit(run_batch_upgrade(
             parent_dir=parent, with_rules=args.with_rules,
             force=args.force, dry_run=args.dry_run, no_diff=args.no_diff,
-            jsonl=args.jsonl,
+            jsonl=args.jsonl, harness=args.harness,
         ))
 
     project_dir = Path(args.project_dir).resolve()
@@ -1535,9 +1569,309 @@ def main():
         project_dir=project_dir, project_name=args.project_name,
         with_rules=args.with_rules, force=args.force,
         upgrade=args.upgrade, dry_run=args.dry_run, no_diff=args.no_diff,
-        jsonl=args.jsonl,
+        jsonl=args.jsonl, harness=args.harness,
     ))
 
 
+def _expand_comp(adapter, by_id):
+    """Expand a composing adapter to [adapter, *composes_resolved] in order.
+    Used by install_harness_adapters so a single "omo" entry also installs
+    the composed opencode + codex configs without callers having to walk
+    adapters.expand() manually.
+    """
+    seen = {adapter.id}
+    out = [adapter]
+    for member_id in getattr(adapter, "composes", ()):
+        member = by_id.get(member_id)
+        if member is not None and member.id not in seen:
+            out.append(member)
+            seen.add(member.id)
+    return out
+
+
+
+# install_harness_adapters — per-harness plugin/extension installer
+# ============================================================================
+# Iterates a list of HarnessAdapter instances (resolved from --harness) and
+# emits the per-harness plugin/extension/agents/skills/rules files into
+# project_dir. The legacy `claude` adapter is byte-equivalent to v3.x — it
+# uses the existing copy_agents / copy_hooks / copy_rules_and_skills /
+# copy_settings_and_claude_md / setup_gitignore flow and writes nothing extra
+# for itself. New adapters (opencode, omp, …) emit per-harness trees
+# (`.opencode/`, `.omp/`, …) without re-running the legacy flow.
+#
+# Each non-claude adapter also installs the canonical "agents/", "skills/"
+# contents into the per-harness directory so the harness auto-discovers them
+# (OpenCode: `.opencode/agents/`, OMP: `.omp/agents/`, …).
+
+_BD_BEADS_INTEGRATION_MARKERS = (
+    "<!-- BEGIN BEADS INTEGRATION",
+    "<!-- END BEADS INTEGRATION -->",
+)
+
+_BD_SETUP_RECIPES_BY_ADAPTER = {
+    "opencode": "opencode",
+    "omp": "opencode",   # oh-my-pi embeds OpenCode as its primary harness
+    "omo": "opencode",   # OMO Ultimate / Light are OpenCode-based
+    "codex": "codex",
+}
+
+
+def _copy_template_file(recorder: "ChangeRecorder", src: Path, dest: Path, rel_key: str) -> None:
+    """Copy one file through the recorder; record_skip if user-modified."""
+    if not src.exists():
+        return
+    ok, _ = should_update_file(dest, rel_key, recorder.manifest, recorder.force)
+    content = src.read_bytes()
+    if ok:
+        recorder.put_file(dest, content, rel_key)
+    else:
+        if not recorder.dry_run:
+            save_upgrade(recorder.project_dir, rel_key, content.decode("utf-8", "replace"))
+        recorder.record_skip(rel_key)
+
+
+def _copy_template_dir(recorder: "ChangeRecorder", src: Path, dest: Path, prefix: str) -> None:
+    """Recursively copy a template directory through the recorder."""
+    if not src.exists() or not src.is_dir():
+        return
+    for src_file in sorted(src.rglob("*")):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(src).as_posix()
+        dest_file = dest / rel
+        _copy_template_file(recorder, src_file, dest_file, f"{prefix}/{rel}")
+
+
+def _write_settings_for_adapter(recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_dir: Path) -> None:
+    """Emit the per-harness settings/config file (json or yml)."""
+    if not adapter.settings_source:
+        return
+    if adapter.id == "claude":
+        # Legacy flow already wrote .claude/settings.json; skip to keep v3.x parity.
+        return
+    dest = recorder.project_dir / Path(adapter.install_root).relative_to(Path(".")) / adapter.settings_filename
+    src = adapter.settings_source
+    rel_key = f"{adapter.install_root.removeprefix('./')}/{adapter.settings_filename}"
+    if not src.exists():
+        return
+    # Inject the per-harness path of the plugin/extension into the config so the
+    # harness auto-loads it. Only do this when the template still references
+    # the claude-style `.cjs` hook path.
+    raw = src.read_text(encoding="utf-8")
+    if adapter.id == "opencode":
+        # opencode.json template only needs the plugin entry — the .ts/.js files
+        # ship in the same directory and Bun resolves the relative path.
+        if '"plugin"' not in raw:
+            raw = raw.rstrip().rstrip("}").rstrip("]").rstrip(",") + ',\n  "plugin": ["./plugins/claude-protocol.js"]\n}'
+    elif adapter.id in ("omp", "omo", "pi"):
+        if "claude-protocol" not in raw and "extensions:" in raw:
+            raw = raw.rstrip() + "\n  - ./extensions/claude-protocol.js\n"
+    _copy_template_file(recorder, Path(raw), dest, rel_key) if False else recorder.put_file(
+        dest, raw.encode("utf-8"), rel_key,
+    )
+
+
+def _write_beads_marker_for_adapter(recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_dir: Path) -> None:
+    """Run `bd setup <recipe>` and write the resulting AGENTS.md marker into the
+    harness-specific agent-instructions file (idempotent if already present)."""
+    recipe = _BD_SETUP_RECIPES_BY_ADAPTER.get(adapter.id)
+    if not recipe or not shutil.which("bd"):
+        return
+    out_rel = adapter.agent_instructions_filename  # "AGENTS.md" or "CLAUDE.md"
+    out_path = project_dir / Path(adapter.install_root).relative_to(Path(".")) / out_rel
+    if out_path.exists() and "BEGIN BEADS INTEGRATION" in out_path.read_text(encoding="utf-8"):
+        return
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not recorder.dry_run:
+        try:
+            subprocess.run(
+                ["bd", "setup", recipe, "-o", str(out_path)],
+                cwd=project_dir, capture_output=True, text=True,
+                shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return
+    if out_path.exists():
+        rel_key = f"{adapter.install_root.removeprefix('./')}/{out_rel}"
+        try:
+            recorder.put_file(out_path, out_path.read_bytes(), rel_key)
+        except Exception:
+            pass
+
+
+def _write_agent_instructions_for_adapter(
+    recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_name: str,
+) -> None:
+    """Append the claude-protocol orchestrator marker on top of whatever
+    ``bd setup <recipe>`` (or a previous install) wrote into the
+    per-harness AGENTS.md / CLAUDE.md. Idempotent: if the marker is
+    already there, no work is done.
+    """
+    src = adapter.agent_instructions_source
+    if not src or not src.exists():
+        return
+    body = src.read_text(encoding="utf-8").replace("[Project]", project_name)
+    marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
+    dest = recorder.project_dir / Path(adapter.install_root).relative_to(Path(".")) / adapter.agent_instructions_filename
+    rel_key = f"{adapter.install_root.removeprefix('./')}/{adapter.agent_instructions_filename}"
+    if not recorder.dry_run:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        existing = dest.read_text(encoding="utf-8")
+        if marker in existing:
+            return  # already installed
+        new_content = existing.rstrip() + f"\n\n---\n\n{marker}\n{body}"
+        recorder.put_file(dest, new_content.encode("utf-8"), rel_key, backup=False)
+    else:
+        recorder.put_file(dest, f"{marker}\n{body}".encode("utf-8"), rel_key, backup=False)
+
+
+def _ensure_agent_instructions_exist(
+    recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_name: str,
+) -> None:
+    """Write the body of AGENTS.md / CLAUDE.md so external ``bd setup <recipe>``
+    can later replace the file. Only writes when the file does NOT already
+    exist on disk — never overwrites a Beads-managed or user-authored file.
+    """
+    src = adapter.agent_instructions_source
+    if not src or not src.exists():
+        return
+    body = src.read_text(encoding="utf-8").replace("[Project]", project_name)
+    marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
+    dest = recorder.project_dir / Path(adapter.install_root).relative_to(Path(".")) / adapter.agent_instructions_filename
+    rel_key = f"{adapter.install_root.removeprefix('./')}/{adapter.agent_instructions_filename}"
+    if dest.exists():
+        return
+    if not recorder.dry_run:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    recorder.put_file(dest, f"{marker}\n{body}".encode("utf-8"), rel_key, backup=False)
+
+
+def _install_legacy_claude_artifacts(recorder: "ChangeRecorder", project_name: str) -> None:
+    """Re-run the v3.x legacy copy flow for the claude adapter (no-op when the
+    caller's bootstrap_project has already done it)."""
+    # bootstrap_project already invokes copy_agents / copy_hooks /
+    # copy_rules_and_skills / copy_settings_and_claude_md for the claude
+    # adapter; nothing to do here.
+    return
+
+
+def install_harness_adapters(
+    recorder: "ChangeRecorder", adapters: list, project_name: str,
+) -> None:
+    """Install per-harness adapters in declaration order.
+
+    `adapters` may be either :class:`HarnessAdapter` instances or plain id
+    strings (e.g. ``"opencode"``); strings are resolved via the
+    ``adapters.resolve()`` helper so callers can pass either shape.
+    """
+    if _HarnessAdapter is None:
+        raise RuntimeError(
+            "adapters module not importable; bootstrap.py is missing adapters.py"
+        )
+
+    resolved: list = []
+    by_id = {a.id: a for a in _ALL_ADAPTERS}
+    for entry in adapters:
+        if isinstance(entry, str):
+            if entry not in by_id:
+                raise ValueError(f"unknown harness: {entry!r}")
+            # Expand any composing adapter inline so a single --harness omo
+            # call also installs the composed opencode + codex configs.
+            for member in _expand_comp(by_id[entry], by_id):
+                resolved.append(member)
+        elif isinstance(entry, _HarnessAdapter):
+            for member in _expand_comp(entry, by_id):
+                resolved.append(member)
+        else:
+            raise TypeError(
+                f"install_harness_adapters expected HarnessAdapter or str, got {type(entry).__name__}"
+            )
+
+    seen: set[str] = set()
+    for adapter in resolved:
+        if adapter.id in seen:
+            continue
+        seen.add(adapter.id)
+        if adapter.id == "claude":
+            continue  # legacy flow is invoked by bootstrap_project
+
+        project_dir = recorder.project_dir
+        adapter_root = project_dir / Path(adapter.install_root).relative_to(Path("."))
+        template_root = adapter.adapter_dir
+
+        # 1. plugin/extension entry + shared runtime policy
+        if adapter.id == "opencode":
+            for rel in ("plugins/claude-protocol.js", "plugins/claude-protocol.ts", "shared/runtime-policy.js"):
+                src = template_root / rel
+                if src.exists():
+                    _copy_template_file(
+                        recorder, src, adapter_root / rel,
+                        f"{adapter.install_root.removeprefix('./')}/{rel}",
+                    )
+        elif adapter.id in ("omp", "omo"):
+            for rel in ("extensions/claude-protocol.js", "extensions/claude-protocol.ts", "shared/runtime-policy.js"):
+                src = template_root / rel
+                if src.exists():
+                    _copy_template_file(
+                        recorder, src, adapter_root / rel,
+                        f"{adapter.install_root.removeprefix('./')}/{rel}",
+                    )
+
+        # 2. per-harness settings/config
+        _write_settings_for_adapter(recorder, adapter, project_dir)
+
+        # 3. canonical agents/, skills/, rules/ (shared content emitted to the
+        #    per-harness root so the harness auto-discovers them).
+        shared_agents = TEMPLATES_DIR / "agents"
+        shared_skills = TEMPLATES_DIR / "skills"
+        shared_rules = TEMPLATES_DIR / "rules"
+        if (template_root / "agents").exists():
+            _copy_template_dir(recorder, template_root / "agents", adapter_root / "agents",
+                               f"{adapter.install_root.removeprefix('./')}/agents")
+        elif shared_agents.exists() and adapter.id in ("opencode", "omp", "omo", "pi"):
+            _copy_template_dir(recorder, shared_agents, adapter_root / "agents",
+                               f"{adapter.install_root.removeprefix('./')}/agents")
+        if (template_root / "skills").exists():
+            _copy_template_dir(recorder, template_root / "skills", adapter_root / "skills",
+                               f"{adapter.install_root.removeprefix('./')}/skills")
+        elif shared_skills.exists() and adapter.id in ("opencode", "omp", "omo", "pi"):
+            _copy_template_dir(recorder, shared_skills, adapter_root / "skills",
+                               f"{adapter.install_root.removeprefix('./')}/skills")
+        if adapter.uses_shared_rules and shared_rules.exists():
+            _copy_template_dir(recorder, shared_rules, adapter_root / "rules",
+                               f"{adapter.install_root.removeprefix('./')}/rules")
+
+        # 4. Write the body of AGENTS.md / CLAUDE.md FIRST so the file
+        #    exists. If the Beads CLI then runs and rewrites the file
+        #    with its own block, that's fine — the orchestrator marker
+        #    is re-appended in step 6.
+        _ensure_agent_instructions_exist(recorder, adapter, project_name)
+
+        # 5. Beads integration marker via `bd setup <recipe>`. The Beads CLI
+        #    overwrites the AGENTS.md from scratch with its own marker block;
+        #    we run the CLI when supported (no-op if already installed). Both
+        #    `omp` and `omo` use the OpenCode Beads recipe because OMP embeds
+        #    the opencode harness.
+        if adapter.id in ("opencode", "omp", "omo"):
+            _write_beads_marker_for_adapter(recorder, adapter, project_dir)
+
+        # 6. Re-append the orchestrator marker on top of whatever the Beads
+        #    CLI just wrote (or skip if the file is missing). Idempotent.
+        _write_agent_instructions_for_adapter(recorder, adapter, project_name)
+
+
+# Lookup table used by bootstrap_project to resolve string ids to adapter
+# objects (the install_harness_adapters API accepts both shapes).
+_BY_ID: dict[str, "_HarnessAdapter"] = (
+    {a.id: a for a in _ALL_ADAPTERS} if _ALL_ADAPTERS else {}
+)
+
+
+# IMPORTANT: must stay at end of file. Defines like install_harness_adapters
+# below this point would NameError on script-mode invocation (python
+# bootstrap.py ...), because the script exits at main() before those defs
+# are ever bound.
 if __name__ == "__main__":
     main()

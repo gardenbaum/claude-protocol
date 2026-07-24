@@ -1,0 +1,4 @@
+{
+  "schema_version": "1",
+  "comment": "Codex CLI writes its own .codex/config.toml when needed (bd setup codex manages that separately). This settings.json placeholder is for any future Codex-compatible JSON configuration."
+}

@@ -62,8 +62,16 @@ runHook('bash-guard', () => {
 
     // bd create must have description
     if (subCmd === 'create' || subCmd === 'new') {
-      if (!command.includes('-d ') && !command.includes('--description ') && !command.includes('--description=')) {
-        deny('bd create requires description (-d or --description) for supervisor context.');
+      const hasDescription = parts.some(
+        (token) => token === '-d'
+        || token === '--description'
+        || token === '--stdin'
+        || token === '--body-file'
+        || token.startsWith('--description=')
+        || token.startsWith('--body-file=')
+      );
+      if (!hasDescription) {
+        deny('bd create requires description (-d, --description, --body-file, or --stdin) for supervisor context.');
       }
     }
 

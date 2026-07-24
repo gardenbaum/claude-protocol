@@ -101,6 +101,40 @@ Execute ALL steps in order:
 
 CLI: `bd prime` for the full workflow + command reference (auto-injected at session start), `bd <cmd> --help` for details. Prefer `--json` when parsing bd output programmatically.
 
+## Beads v1.1.0 — features the workflow relies on
+
+These were added or changed in Beads v1.1.0. The bootstrap and the workflow
+expect them; the project may be on v1.0.x, in which case treat the affected
+sections as soft guidance rather than hard rules.
+
+- **`bd init --init-if-missing`** (idempotent) — bootstrap calls this when the
+  installed `bd` supports it, so re-running `python bootstrap.py` on an
+  already-initialized project is safe. No more "database already exists".
+- **`bd prime` divergence reminder** — when `AGENTS.md` and `CLAUDE.md` drift
+  out of sync (different orchestrator body, different bead section, different
+  project description), `bd prime` prints a one-shot nudge at session start.
+  Treat it as a TODO, not as a blocker: read both files, decide which is
+  canonical, sync the other. The shared body lives in
+  `templates/AGENTS.md` and `templates/CLAUDE.md` — diffing the
+  installed `CLAUDE.md` against `AGENTS.md` is enough.
+- **`bd metrics` with first-run consent** — `bd metrics` is the new
+  observability surface (throughput, ready backlog, dep-graph health). The
+  first run prints a one-line consent notice. **Do not run `bd metrics`
+  without explicit user consent in this session** — the consent gate lives
+  in the user, not in the workflow. If the user has already opted in once,
+  subsequent runs are silent.
+- **Sync repair cascade** — pull-time merge conflicts that used to strand
+  the clone now auto-resolve (mixed-schema, dep-violation, drift). If a
+  conflict still surfaces, the message is a recovery path, not a stack
+  trace: read it, do what it says, then `bd doctor` to confirm clean state.
+- **Compaction-archive-before-discard** — `bd compact` no longer loses data;
+  it archives first and `bd restore` is wired in. If you (or the user)
+  compacted before and the bead vanished, `bd restore {ID}` brings it back.
+- **`bd doctor` drift detection** — schema-migration content skew between
+  the local DB and the cached remote ref is now flagged, not silent. The
+  session-start hook surfaces any drift; if it does, `bd doctor` is the
+  first command to run, not the last.
+
 ## Banned
 
 - Working directly on main branch

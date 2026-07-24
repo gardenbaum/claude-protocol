@@ -649,23 +649,55 @@ def _iter_hook_commands(settings_path: Path):
 _BD_CAPABILITIES: dict[str, bool] = {}
 
 
+def _run_bd_with_timeout(args: list[str], cwd: "Path | None" = None,
+                         timeout: float = 15.0) -> "subprocess.CompletedProcess | None":
+    """Run a `bd` command, killing the process if it hangs past `timeout`.
+
+    Unlike `subprocess.run(..., timeout=...)`, this kills the child process
+    tree on timeout instead of leaving a zombie that holds the `.beads`
+    Dolt lock. Returns None on timeout, the CompletedProcess otherwise.
+    Used for the bootstrap's hang-prone `bd init` and capability-probe
+    calls so a wedged Dolt server can't block the installer.
+    """
+    try:
+        proc = subprocess.Popen(
+            args, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, text=True, shell=_SHELL,
+        )
+    except OSError:
+        return None
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        return None
+    return subprocess.CompletedProcess(
+        args=args, returncode=proc.returncode,
+        stdout=stdout or "", stderr=stderr or "",
+    )
+
+
 def _bd_supports_init_if_missing() -> bool:
     """Return True if the installed `bd` supports --init-if-missing (v1.1.0+).
 
     Used to keep bootstrap backward-compatible with Beads v1.0.x while
-    enabling the idempotent path on v1.1.0+.
+    enabling the idempotent path on v1.1.0+. Uses a short timeout and
+    kills the child on hang so a wedged `bd` can't block the installer.
     """
     if "init_if_missing" not in _BD_CAPABILITIES:
-        try:
-            help_proc = subprocess.run(
-                ["bd", "init", "--help"],
-                capture_output=True, text=True, shell=_SHELL,
-                timeout=5,
-            )
-            text = (help_proc.stdout or "") + (help_proc.stderr or "")
-            _BD_CAPABILITIES["init_if_missing"] = "--init-if-missing" in text
-        except (subprocess.TimeoutExpired, OSError):
+        result = _run_bd_with_timeout(
+            ["bd", "init", "--help"], timeout=5,
+        )
+        if result is None:
             _BD_CAPABILITIES["init_if_missing"] = False
+        else:
+            text = (result.stdout or "") + (result.stderr or "")
+            _BD_CAPABILITIES["init_if_missing"] = "--init-if-missing" in text
     return _BD_CAPABILITIES["init_if_missing"]
 
 
@@ -953,19 +985,13 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
     beads_dir = project_dir / ".beads"
     if not beads_dir.exists():
         print("  - Initializing .beads directory...")
-        try:
-            # --init-if-missing (Beads v1.1.0+) makes this idempotent: first
-            # run creates the DB, subsequent runs are no-ops instead of
-            # "database already exists" errors. Safe to omit on older bds
-            # because we only pass it when the flag is supported.
-            bd_init_cmd = _bd_init_idempotent_cmd()
-            result = subprocess.run(
-                bd_init_cmd, cwd=project_dir,
-                capture_output=True, text=True, shell=_SHELL,
-                stdin=subprocess.DEVNULL, timeout=15,
-            )
-        except subprocess.TimeoutExpired:
-            result = None
+        # --init-if-missing (Beads v1.1.0+) makes this idempotent: first
+        # run creates the DB, subsequent runs are no-ops instead of
+        # "database already exists" errors. Safe to omit on older bds
+        # because we only pass it when the flag is supported.
+        bd_init_cmd = _bd_init_idempotent_cmd()
+        result = _run_bd_with_timeout(bd_init_cmd, cwd=project_dir, timeout=15)
+        if result is None:
             print("  - bd init timed out (Dolt server not running?)")
         if result is None or result.returncode != 0:
             beads_dir.mkdir(exist_ok=True)

@@ -2097,3 +2097,66 @@ class TestInstallerSubprocessHardening:
         assert install is not None, "an install method should have been attempted"
         assert install.get("timeout")
         assert install.get("stdin") is not None
+
+
+class TestBdHangFallback:
+    """The Dolt-server-can-hang path: bootstrap must not block forever."""
+
+    def test_run_bd_with_timeout_kills_on_hang(self, monkeypatch):
+        """A hung `bd` process must be killed, not abandoned as a zombie.
+
+        Regression test for the case where a wedged Dolt server makes
+        `bd init` block indefinitely. Without Popen+kill, subprocess.run's
+        timeout= leaves a zombie holding the .beads lock.
+        """
+        import subprocess as sp
+
+        # Synthetic hung process: Popen returns; communicate() raises
+        # TimeoutExpired; kill() is then called and must succeed.
+        class FakeProc:
+            killed = False
+            returncode = -9  # typical SIGKILL exit
+
+            def __init__(self, *a, **kw):
+                pass
+
+            def communicate(self, timeout=None):
+                if not FakeProc.killed:
+                    raise sp.TimeoutExpired(cmd="bd", timeout=timeout or 0)
+
+            def kill(self):
+                FakeProc.killed = True
+
+        monkeypatch.setattr(bootstrap.subprocess, "Popen", FakeProc)
+        result = bootstrap._run_bd_with_timeout(["bd", "init"], timeout=0.01)
+        assert result is None
+        assert FakeProc.killed, "child must be killed on timeout"
+
+    def test_init_capability_probe_handles_hang(self, monkeypatch, tmp_path):
+        """The --init-if-missing capability probe must degrade safely on hang.
+
+        Used to leave the cache populated as False when `bd init --help`
+        blocks past the 5s probe window. The bootstrap must continue
+        instead of waiting forever.
+        """
+        # Clear module-level cache so the probe actually runs.
+        bootstrap._BD_CAPABILITIES.pop("init_if_missing", None)
+
+        def fake_hang(args, cwd=None, timeout=15.0):
+            return None  # simulate the kill-on-timeout path
+
+        monkeypatch.setattr(bootstrap, "_run_bd_with_timeout", fake_hang)
+        # Also make shutil.which('bd') truthy so the probe is attempted.
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda c: "/usr/bin/bd" if c == "bd" else None)
+        supported = bootstrap._bd_supports_init_if_missing()
+        assert supported is False
+        # And it should be cached now.
+        assert bootstrap._BD_CAPABILITIES["init_if_missing"] is False
+
+    def test_init_cmd_omits_flag_when_probe_hangs(self, monkeypatch):
+        """If the capability probe hangs (bd is broken), we fall back to
+        the legacy `bd init` (no --init-if-missing) instead of crashing."""
+        bootstrap._BD_CAPABILITIES.pop("init_if_missing", None)
+        monkeypatch.setattr(bootstrap, "_bd_supports_init_if_missing", lambda: False)
+        cmd = bootstrap._bd_init_idempotent_cmd()
+        assert cmd == ["bd", "init"]

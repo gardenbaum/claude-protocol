@@ -166,12 +166,16 @@ describe('bash-guard hook', () => {
       const fakeBinDir = path.join(tmpDir, 'bin');
       fs.mkdirSync(fakeBinDir);
 
-      // Fake bd: responds to `bd show <id> --json` and `bd list --json`
+      // Fake bd: responds to `bd show <id> --json` and `bd list --json --all`
+      // (the hook now passes --all so closed children are visible to the
+      // completeness check; without it, a fully-closed epic would slip
+      // through the audit).
       const fakeBd = path.join(fakeBinDir, 'bd');
       fs.writeFileSync(fakeBd, [
         '#!/bin/sh',
         `case "$*" in`,
         `  "show E --json") echo '${showJson}' ;;`,
+        `  "list --json --all") echo '${listJson}' ;;`,
         `  "list --json") echo '${listJson}' ;;`,
         `  *) exit 1 ;;`,
         'esac',

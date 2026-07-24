@@ -61,9 +61,12 @@ export const ClaudeProtocol = async ({ project, directory }) => {
       output.metadata = { ...(output.metadata || {}), claudeProtocolValidation: "failed" };
     },
     "permission.ask": async (input, output) => {
+      // Second-line check; primary enforcement is in tool.execute.before.
+      // If the command field is missing from metadata, let the request
+      // through — tool.execute.before will still see the bash call.
       if (input.permission !== "bash") return;
-      const command = String(input.metadata?.command ?? "");
-      if (rt.validateBash(command)) output.status = "deny";
+      const command = String((input.metadata && input.metadata.command) ?? "");
+      if (command && rt.validateBash(command)) output.status = "deny";
     },
     "experimental.session.compacting": async (_input, output) => {
       output.context.push(

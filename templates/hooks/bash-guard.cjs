@@ -60,19 +60,42 @@ runHook('bash-guard', () => {
     const parts = command.split(/\s+/);
     const subCmd = parts[1] || '';
 
-    // bd create must have description
+    // bd create must have description. Description-equivalent flags
+    // (Beads v1.0.5+): -d/--description, --body-file/--stdin, --design,
+    // --design-file, --acceptance, --context, --notes, --append-notes.
+    // Any one is enough — supervisors need *some* context for the bead.
     if (subCmd === 'create' || subCmd === 'new') {
       const hasDescription = parts.some(
         (token) => token === '-d'
         || token === '--description'
         || token === '--stdin'
         || token === '--body-file'
+        || token === '--design'
+        || token === '--design-file'
+        || token === '--acceptance'
+        || token === '--context'
+        || token === '--notes'
+        || token === '--append-notes'
         || token.startsWith('--description=')
         || token.startsWith('--body-file=')
+        || token.startsWith('--design=')
+        || token.startsWith('--design-file=')
+        || token.startsWith('--acceptance=')
+        || token.startsWith('--context=')
+        || token.startsWith('--notes=')
+        || token.startsWith('--append-notes=')
       );
       if (!hasDescription) {
-        deny('bd create requires description (-d, --description, --body-file, or --stdin) for supervisor context.');
+        deny('bd create requires description (-d, --description, --body-file, --stdin, --design, --design-file, --acceptance, --context, --notes, or --append-notes) for supervisor context.');
       }
+    }
+
+    // bd q (Quick-Capture) auto-generates a placeholder description; do not
+    // require one. Otherwise, when the user wants to capture a half-formed
+    // thought fast, the hook would block them on a flag they don't know
+    // about. The full `bd create` still requires a description.
+    if (subCmd === 'q') {
+      return;
     }
 
     // === Epic close validation ===
@@ -108,7 +131,10 @@ runHook('bash-guard', () => {
       const issueType = beadData && beadData[0] ? (beadData[0].issue_type || '') : '';
 
       if (issueType === 'epic') {
-        const allBeads = execCommandJSON('bd', ['list', '--json']);
+        // --all includes closed children (default is open-only); without it
+        // we'd silently approve an epic close when all children are already
+        // closed, because they'd be missing from the default scan.
+        const allBeads = execCommandJSON('bd', ['list', '--json', '--all']);
         if (Array.isArray(allBeads)) {
           const prefix = closeId + '.';
           const incomplete = allBeads.filter(

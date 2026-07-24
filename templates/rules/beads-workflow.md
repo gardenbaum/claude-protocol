@@ -24,7 +24,7 @@ Rule of thumb: 1 bead = 1 PR = 1 reviewable diff.
 **Step 2: Create beads:**
 - Single task: `bd create "Task" -d "..."`
 - Epic: `bd create "Feature" -d "..." --type epic`, then children with `--parent` and `--deps`
-- Full list of `--type` values (task, bug, feature, epic, spike, story, milestone, ...): `bd create --help`
+- Full list of `--type` values (built-in: `bug`, `feature`, `task`, `epic`, `chore`, `decision`; aliases: `enhancement`/`feat`→`feature`, `dec`/`adr`→`decision`; custom types require `types.custom` config): `bd create --help`
 - Verify: `bd list` — the plan now lives in beads, not just in context
 
 **Step 3: Only then start work** with `bd ready` → dispatch
@@ -129,7 +129,9 @@ sections as soft guidance rather than hard rules.
   trace: read it, do what it says, then `bd doctor` to confirm clean state.
 - **Compaction-archive-before-discard** — `bd compact` no longer loses data;
   it archives first and `bd restore` is wired in. If you (or the user)
-  compacted before and the bead vanished, `bd restore {ID}` brings it back.
+  compacted before and the bead vanished, `bd restore {ID}` shows the
+  archived content (read-only by default; pass `--apply` to actually
+  write the original back and step the compaction level down).
 - **`bd doctor` drift detection** — schema-migration content skew between
   the local DB and the cached remote ref is now flagged, not silent. The
   session-start hook surfaces any drift; if it does, `bd doctor` is the

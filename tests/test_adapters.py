@@ -118,18 +118,28 @@ def test_install_opencode_writes_plugin_and_shared_assets(tmp_path, monkeypatch)
 
     bootstrap.install_harness_adapters(recorder, ["opencode"], "Demo")
 
+    # Capability root: .opencode/ holds plugins/agents/skills (these are
+    # the OpenCode 1.18+ discovery locations).
     assert (tmp_path / ".opencode" / "plugins" / "claude-protocol.js").is_file()
     assert (tmp_path / ".opencode" / "shared" / "runtime-policy.js").is_file()
-    assert (tmp_path / ".opencode" / "opencode.json").is_file()
     assert (tmp_path / ".opencode" / "agents" / "code-reviewer.md").is_file()
     assert (tmp_path / ".opencode" / "skills" / "project-discovery" / "SKILL.md").is_file()
-    assert (tmp_path / ".opencode" / "AGENTS.md").is_file()
 
-    cfg = json.loads((tmp_path / ".opencode" / "opencode.json").read_text())
-    assert "claude-protocol.js" in cfg["plugin"][0]
+    # Runtime config + agent instructions live at the project root, not
+    # under .opencode/. OpenCode reads ./opencode.json (root), and
+    # AGENTS.md from the working directory (or any ancestor).
+    assert (tmp_path / "opencode.json").is_file()
+    assert (tmp_path / "AGENTS.md").is_file()
+    assert not (tmp_path / ".opencode" / "opencode.json").exists()
+    assert not (tmp_path / ".opencode" / "AGENTS.md").exists()
+
+    cfg = json.loads((tmp_path / "opencode.json").read_text())
+    # opencode.json lives at the project root, so the plugin path is
+    # relative to the root (./.opencode/plugins/claude-protocol.js).
+    assert ".opencode/plugins/claude-protocol.js" in cfg["plugin"][0]
     assert cfg["$schema"] == "https://opencode.ai/config.json"
 
-    agents_md = (tmp_path / ".opencode" / "AGENTS.md").read_text()
+    agents_md = (tmp_path / "AGENTS.md").read_text()
     # Beads block (from mock) AND orchestrator marker must both be present
     assert "BEGIN BEADS INTEGRATION" in agents_md
     assert agents_md.count("BEGIN CLAUDE-PROTOCOL ORCHESTRATION") == 1
@@ -149,18 +159,27 @@ def test_install_omp_writes_extension_config_rules_agents_and_beads_profile(tmp_
 
     bootstrap.install_harness_adapters(recorder, ["omp"], "Demo")
 
+    # OMP capability root: .omp/ holds extensions/rules/skills/agents.
     assert (tmp_path / ".omp" / "extensions" / "claude-protocol.js").is_file()
     assert (tmp_path / ".omp" / "shared" / "runtime-policy.js").is_file()
     assert (tmp_path / ".omp" / "config.yml").is_file()
     assert (tmp_path / ".omp" / "rules" / "beads-workflow.md").is_file()
     assert (tmp_path / ".omp" / "agents" / "merge-supervisor.md").is_file()
     assert (tmp_path / ".omp" / "skills" / "project-discovery" / "SKILL.md").is_file()
-    assert (tmp_path / ".omp" / "AGENTS.md").is_file()
-    # omp runs `bd setup opencode` with its own install_root
+
+    # AGENTS.md lives at the project root for OMP (compatible with
+    # the agents-md provider discovery + the composed opencode adapter).
+    assert (tmp_path / "AGENTS.md").is_file()
+    assert not (tmp_path / ".omp" / "AGENTS.md").exists()
+
+    # omp runs `bd setup opencode` and writes to the project root AGENTS.md
     omp_opencode_calls = [c for c in calls if c[:3] == ["bd", "setup", "opencode"]]
     assert omp_opencode_calls
-    assert any(c[-1].endswith(".omp/AGENTS.md") for c in omp_opencode_calls)
-    agents_md = (tmp_path / ".omp" / "AGENTS.md").read_text()
+    # Beads setup targets the project-root AGENTS.md (not .omp/AGENTS.md)
+    assert any(c[-1].endswith("/AGENTS.md") and "/.omp/" not in c[-1]
+               for c in omp_opencode_calls)
+
+    agents_md = (tmp_path / "AGENTS.md").read_text()
     assert "BEGIN BEADS INTEGRATION" in agents_md
     assert agents_md.count("BEGIN CLAUDE-PROTOCOL ORCHESTRATION") == 1
     assert "claude-protocol.js" in (tmp_path / ".omp" / "config.yml").read_text()
@@ -193,12 +212,14 @@ def test_install_omo_composes_opencode_and_codex(tmp_path, monkeypatch):
 
     # Omo composes opencode — the opencode plugin lives under .opencode/
     assert (tmp_path / ".opencode" / "plugins" / "claude-protocol.js").is_file()
-    # Omo composes codex — codex artifacts live under .codex/
-    assert (tmp_path / ".codex" / "settings.json").is_file()
-    # Omo-level marker file (.omo/AGENTS.md) present and contains the
-    # Beads INTEGRATION block from the opencode recipe.
-    assert (tmp_path / ".omo" / "AGENTS.md").is_file()
-    assert "BEGIN BEADS INTEGRATION" in (tmp_path / ".omo" / "AGENTS.md").read_text()
+    # Omo composes codex — codex config.toml lives under .codex/ (not
+    # .codex/settings.json, which Codex CLI does not read).
+    assert (tmp_path / ".codex" / "config.toml").is_file()
+    assert not (tmp_path / ".codex" / "settings.json").exists()
+    # The shared agent instructions live at the project root so both
+    # the composed opencode and codex harnesses can read them.
+    assert (tmp_path / "AGENTS.md").is_file()
+    assert "BEGIN BEADS INTEGRATION" in (tmp_path / "AGENTS.md").read_text()
     # bd setup opencode runs at least once during omo expansion
     assert any(c[:3] == ["bd", "setup", "opencode"] for c in calls)
 
@@ -211,9 +232,9 @@ def test_install_is_idempotent_does_not_duplicate_orchestrator_marker(tmp_path, 
     monkeypatch.setattr(bootstrap.shutil, "which", lambda n: "/usr/bin/bd" if n == "bd" else None)
 
     bootstrap.install_harness_adapters(recorder, ["opencode"], "Demo")
-    first = (tmp_path / ".opencode" / "AGENTS.md").read_text()
+    first = (tmp_path / "AGENTS.md").read_text()
     bootstrap.install_harness_adapters(recorder, ["opencode"], "Demo")
-    second = (tmp_path / ".opencode" / "AGENTS.md").read_text()
+    second = (tmp_path / "AGENTS.md").read_text()
 
     assert first.count("BEGIN CLAUDE-PROTOCOL ORCHESTRATION") == 1
     assert second.count("BEGIN CLAUDE-PROTOCOL ORCHESTRATION") == 1

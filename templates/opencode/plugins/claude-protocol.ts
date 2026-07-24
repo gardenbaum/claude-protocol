@@ -78,9 +78,16 @@ export const ClaudeProtocol = async ({ project, directory }) => {
     },
 
     "permission.ask": async (input, output) => {
+      // NOTE: OpenCode's permission-ask payload structure varies across
+      // versions; metadata.command is the most common location, but the
+      // primary enforcement runs in tool.execute.before where
+      // output.args.command is reliably populated. The permission.ask
+      // hook is a second-line check; if the command field is missing,
+      // we just let the request through and rely on tool.execute.before
+      // to catch the bash invocation.
       if (input.permission !== "bash") return;
-      const command = String(input.metadata?.command ?? "");
-      if (rt.validateBash(command)) output.status = "deny";
+      const command = String((input.metadata && (input.metadata as { command?: unknown }).command) ?? "");
+      if (command && rt.validateBash(command)) output.status = "deny";
     },
 
     "experimental.session.compacting": async (_input, output) => {

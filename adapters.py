@@ -73,6 +73,20 @@ class HarnessAdapter:
         rules directory only.
     agent_instructions_template : str
         Path inside the per-harness dir to the agent instructions template.
+    settings_in_install_root : bool
+        If True (default), the settings file lives at ``<install_root>/<settings_filename>``
+        (e.g. ``.codex/config.toml``, ``.claude/settings.json``).
+        If False, the settings file lives at the project root with
+        ``settings_filename`` as the leaf (e.g. ``./opencode.json`` for
+        OpenCode 1.18+, where ``.opencode/`` is the capability root for
+        plugins/agents/skills but the runtime config is a root-level file).
+    project_instructions_at_root : bool
+        If True, agent instructions are written to the project root
+        (``./AGENTS.md``) instead of inside ``install_root``
+        (``./.opencode/AGENTS.md``). OpenCode 1.18+ reads the project-wide
+        ``AGENTS.md`` from the working directory; ``.opencode/AGENTS.md``
+        is silently ignored. Codex reads only the root- or
+        ancestor-``AGENTS.md``, never a harness-internal copy.
     """
 
     id: str
@@ -82,6 +96,8 @@ class HarnessAdapter:
     composes: tuple[str, ...] = ()
     uses_shared_rules: bool = False
     agent_instructions_template: str = "AGENTS.md"
+    settings_in_install_root: bool = True
+    project_instructions_at_root: bool = False
 
     # ------------------------------------------------------------------ paths
 
@@ -92,13 +108,52 @@ class HarnessAdapter:
 
     @property
     def settings_source(self) -> Path | None:
-        """Per-harness settings.json template, or None."""
+        """Per-harness settings template, or shared fallback.
+
+        For OpenCode (settings_in_install_root=False) the file lives at the
+        project root (./opencode.json) rather than .opencode/opencode.json.
+        The OpenCode runtime reads only the root-level config; writing into
+        .opencode/ would put it where no loader looks.
+        """
         candidate = self.adapter_dir / self.settings_filename
         if candidate.exists():
             return candidate
         if self.settings_filename == "settings.json" and SHARED_SETTINGS_JSON.exists():
             return SHARED_SETTINGS_JSON
         return None
+
+    def settings_destination(self, project_dir: Path) -> Path:
+        """Project-relative destination for the settings file.
+
+        Respects ``settings_in_install_root`` (False → project root,
+        True → inside ``install_root``).
+        """
+        if self.settings_in_install_root:
+            return project_dir / self.install_root / self.settings_filename
+        return project_dir / self.settings_filename
+
+    def settings_rel_key(self) -> str:
+        """Recorder key for the settings file (matches destination layout)."""
+        if self.settings_in_install_root:
+            return f"{self.install_root}/{self.settings_filename}"
+        return self.settings_filename
+
+    def agent_instructions_destination(self, project_dir: Path) -> Path:
+        """Project-relative destination for the agent instructions file.
+
+        Respects ``project_instructions_at_root`` (True → project root,
+        False → inside ``install_root``). OpenCode and Codex read root-level
+        AGENTS.md; writing into .opencode/AGENTS.md is silently ignored.
+        """
+        if self.project_instructions_at_root:
+            return project_dir / self.agent_instructions_filename
+        return project_dir / self.install_root / self.agent_instructions_filename
+
+    def agent_instructions_rel_key(self) -> str:
+        """Recorder key for the agent instructions file."""
+        if self.project_instructions_at_root:
+            return self.agent_instructions_filename
+        return f"{self.install_root}/{self.agent_instructions_filename}"
 
     @property
     def agent_instructions_source(self) -> Path | None:
@@ -127,21 +182,36 @@ CLAUDE = HarnessAdapter(
 CODEX = HarnessAdapter(
     id="codex",
     install_root=".codex",
-    agent_instructions_filename="CLAUDE.md",
-    settings_filename="settings.json",
-    agent_instructions_template="CLAUDE.md",
+    # Codex CLI reads the global ~/.codex/AGENTS.md + a project- or
+    # ancestor-level AGENTS.md; it does NOT read .codex/CLAUDE.md and
+    # has no documented .codex/settings.json schema. AGENTS.md stays
+    # at the project root via project_instructions_at_root=True so the
+    # Codex discovery path actually finds it.
+    agent_instructions_filename="AGENTS.md",
+    settings_filename="config.toml",
+    agent_instructions_template="AGENTS.md",
+    project_instructions_at_root=True,
+    uses_shared_rules=True,  # .codex/rules/ is read natively
 )
 OPENCODE = HarnessAdapter(
     id="opencode",
     install_root=".opencode",
+    # OpenCode 1.18+ reads runtime config from ./opencode.json (project
+    # root), NOT .opencode/opencode.json — .opencode/ is the capability
+    # root for plugins/agents/skills/commands only. Agent instructions
+    # are read from the project-root or ancestor AGENTS.md via
+    # agent-discovery; .opencode/AGENTS.md is silently ignored.
     agent_instructions_filename="AGENTS.md",
     settings_filename="opencode.json",
+    settings_in_install_root=False,
+    project_instructions_at_root=True,
 )
 PI = HarnessAdapter(
     id="pi",
     install_root=".pi",
     agent_instructions_filename="AGENTS.md",
     settings_filename="config.yml",
+    project_instructions_at_root=True,
 )
 OMP = HarnessAdapter(
     id="omp",
@@ -149,14 +219,19 @@ OMP = HarnessAdapter(
     agent_instructions_filename="AGENTS.md",
     settings_filename="config.yml",
     uses_shared_rules=True,
+    project_instructions_at_root=True,
 )
 OMO = HarnessAdapter(
     id="omo",
     install_root=".omo",
+    # OMO is a composition alias: it materializes the opencode + codex
+    # capability trees. The .omo/ dir is only kept for the OMO-specific
+    # settings overlay; instructions live at the project root because
+    # the composed harnesses (opencode, codex) both read root AGENTS.md.
     agent_instructions_filename="AGENTS.md",
     settings_filename="config.yml",
     composes=("opencode", "codex"),
-    uses_shared_rules=True,
+    project_instructions_at_root=True,
 )
 
 

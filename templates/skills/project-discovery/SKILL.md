@@ -1,7 +1,7 @@
 ---
 name: project-discovery
-description: Analyze existing project and extract conventions, patterns, and architecture into .claude/rules/project-conventions.md
-user-invocable: true
+description: Analyze existing project and extract conventions, patterns, and architecture into project-conventions.md
+user-invocable: true   # Claude Code; ignored by OpenCode/OMP (use 'disable-model-invocation' there)
 ---
 
 # Project Discovery

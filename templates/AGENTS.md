@@ -14,11 +14,11 @@
 
 - **Investigate first** — read the actual source files before delegating. Never dispatch without reading the code you intend to change.
 - **Co-pilot** — discuss before acting. Summarize the proposed plan. Wait for user confirmation before dispatching.
-- **Delegate implementation** — spawn a fresh subagent for implementation work via the `task` tool. Project conventions from `.claude/rules/` (or the rules directory of your harness) are auto-loaded.
+- **Delegate implementation** — spawn a fresh subagent for implementation work via the `task` tool. Project conventions from `.claude/rules/` (Claude Code) are auto-loaded; OpenCode reads `AGENTS.md` plus files listed in `opencode.json` `instructions`; OMP reads `.omp/RULES.md` and the rules the `alwaysApply` frontmatter matches. Other harnesses may not auto-load any rules directory at all.
 
 ## Workflow
 
-The `bd prime` session-start hook (run at the start of every turn via `experimental.chat.system.transform`) provides the beads workflow basics. This file adds the **orchestration** layer on top. See `.claude/rules/beads-workflow.md` (or your harness's rules directory) for the worktree-per-bead protocol.
+The `bd prime` session-start hook (run at the start of every turn via `experimental.chat.system.transform` in OpenCode, or injected at Claude Code session start) provides the beads workflow basics. This file adds the **orchestration** layer on top. See `.claude/rules/beads-workflow.md` (Claude Code) for the worktree-per-bead protocol; for other harnesses the same rules may live under `.omp/rules/` (OMP) or as inline `instructions` in `opencode.json` (OpenCode).
 
 ### Standalone (single task)
 
@@ -61,11 +61,14 @@ Use when: multiple files/domains, "first X then Y", DB + API + frontend.
 
 ## Bug Fixes & Follow-Up
 
-Closed beads stay closed. For follow-up:
+Closed beads stay closed. For follow-up, prefer these dep types:
+- `bd dep add {NEW} --type discovered-from {OLD}` — discovery note, unblocks either side
+- `bd dep add {NEW} --type supersedes {OLD}` — NEW replaces OLD (NEW inherits context)
+- `bd relate {NEW} {OLD}` (or `bd dep add --type relates-to`) — bidirectional "see also" for loosely-related work; NOT a follow-up marker
 
 ```bash
 bd create "Fix: [desc]" -d "Follow-up to {OLD_ID}: [details]"
-bd dep relate {NEW_ID} {OLD_ID}
+bd dep add {NEW_ID} --type supersedes {OLD_ID}
 ```
 
 ## Agents

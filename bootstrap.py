@@ -1714,9 +1714,9 @@ def _write_settings_for_adapter(recorder: "ChangeRecorder", adapter: "_HarnessAd
     if adapter.id == "claude":
         # Legacy flow already wrote .claude/settings.json; skip to keep v3.x parity.
         return
-    dest = recorder.project_dir / Path(adapter.install_root).relative_to(Path(".")) / adapter.settings_filename
+    dest = adapter.settings_destination(recorder.project_dir)
     src = adapter.settings_source
-    rel_key = f"{adapter.install_root.removeprefix('./')}/{adapter.settings_filename}"
+    rel_key = adapter.settings_rel_key()
     if not src.exists():
         return
     # Inject the per-harness path of the plugin/extension into the config so the
@@ -1724,16 +1724,15 @@ def _write_settings_for_adapter(recorder: "ChangeRecorder", adapter: "_HarnessAd
     # the claude-style `.cjs` hook path.
     raw = src.read_text(encoding="utf-8")
     if adapter.id == "opencode":
-        # opencode.json template only needs the plugin entry — the .ts/.js files
-        # ship in the same directory and Bun resolves the relative path.
+        # opencode.json lives at the project root; the plugin path is
+        # therefore relative to that root (.opencode/plugins/...).
         if '"plugin"' not in raw:
-            raw = raw.rstrip().rstrip("}").rstrip("]").rstrip(",") + ',\n  "plugin": ["./plugins/claude-protocol.js"]\n}'
+            raw = raw.rstrip().rstrip("}").rstrip("]").rstrip(",") + ',\n  "plugin": ["./.opencode/plugins/claude-protocol.js"]\n}'
     elif adapter.id in ("omp", "omo", "pi"):
+        # config.yml is at .omp/config.yml, so extensions/ is a sibling.
         if "claude-protocol" not in raw and "extensions:" in raw:
             raw = raw.rstrip() + "\n  - ./extensions/claude-protocol.js\n"
-    _copy_template_file(recorder, Path(raw), dest, rel_key) if False else recorder.put_file(
-        dest, raw.encode("utf-8"), rel_key,
-    )
+    recorder.put_file(dest, raw.encode("utf-8"), rel_key)
 
 
 def _write_beads_marker_for_adapter(recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_dir: Path) -> None:
@@ -1742,8 +1741,7 @@ def _write_beads_marker_for_adapter(recorder: "ChangeRecorder", adapter: "_Harne
     recipe = _BD_SETUP_RECIPES_BY_ADAPTER.get(adapter.id)
     if not recipe or not shutil.which("bd"):
         return
-    out_rel = adapter.agent_instructions_filename  # "AGENTS.md" or "CLAUDE.md"
-    out_path = project_dir / Path(adapter.install_root).relative_to(Path(".")) / out_rel
+    out_path = adapter.agent_instructions_destination(project_dir)
     if out_path.exists() and "BEGIN BEADS INTEGRATION" in out_path.read_text(encoding="utf-8"):
         return
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1757,7 +1755,7 @@ def _write_beads_marker_for_adapter(recorder: "ChangeRecorder", adapter: "_Harne
         except (subprocess.TimeoutExpired, OSError):
             return
     if out_path.exists():
-        rel_key = f"{adapter.install_root.removeprefix('./')}/{out_rel}"
+        rel_key = adapter.agent_instructions_rel_key()
         try:
             recorder.put_file(out_path, out_path.read_bytes(), rel_key)
         except Exception:
@@ -1777,10 +1775,11 @@ def _write_agent_instructions_for_adapter(
         return
     body = src.read_text(encoding="utf-8").replace("[Project]", project_name)
     marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
-    dest = recorder.project_dir / Path(adapter.install_root).relative_to(Path(".")) / adapter.agent_instructions_filename
-    rel_key = f"{adapter.install_root.removeprefix('./')}/{adapter.agent_instructions_filename}"
-    if not recorder.dry_run:
-        dest.parent.mkdir(parents=True, exist_ok=True)
+    dest = adapter.agent_instructions_destination(recorder.project_dir)
+    rel_key = adapter.agent_instructions_rel_key()
+    if recorder.dry_run:
+        # No-op: the marker logic runs only when actually writing.
+        return
     if dest.exists():
         existing = dest.read_text(encoding="utf-8")
         if marker in existing:
@@ -1788,6 +1787,7 @@ def _write_agent_instructions_for_adapter(
         new_content = existing.rstrip() + f"\n\n---\n\n{marker}\n{body}"
         recorder.put_file(dest, new_content.encode("utf-8"), rel_key, backup=False)
     else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
         recorder.put_file(dest, f"{marker}\n{body}".encode("utf-8"), rel_key, backup=False)
 
 
@@ -1803,8 +1803,8 @@ def _ensure_agent_instructions_exist(
         return
     body = src.read_text(encoding="utf-8").replace("[Project]", project_name)
     marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
-    dest = recorder.project_dir / Path(adapter.install_root).relative_to(Path(".")) / adapter.agent_instructions_filename
-    rel_key = f"{adapter.install_root.removeprefix('./')}/{adapter.agent_instructions_filename}"
+    dest = adapter.agent_instructions_destination(recorder.project_dir)
+    rel_key = adapter.agent_instructions_rel_key()
     if dest.exists():
         return
     if not recorder.dry_run:
@@ -1862,25 +1862,32 @@ def install_harness_adapters(
             continue  # legacy flow is invoked by bootstrap_project
 
         project_dir = recorder.project_dir
-        adapter_root = project_dir / Path(adapter.install_root).relative_to(Path("."))
+        adapter_root = project_dir / adapter.install_root
         template_root = adapter.adapter_dir
 
         # 1. plugin/extension entry + shared runtime policy
+        #
+        # We ship ONE entry per harness (the bundled .js) and skip the
+        # .ts source. OpenCode and OMP both discover .ts and .js in the
+        # same directory; emitting both causes the same hook to fire
+        # twice (one module per loader). The .ts source remains in
+        # ``templates/`` for the maintainers' benefit; consumers get
+        # the pre-bundled JS so double-loading is impossible.
         if adapter.id == "opencode":
-            for rel in ("plugins/claude-protocol.js", "plugins/claude-protocol.ts", "shared/runtime-policy.js"):
+            for rel in ("plugins/claude-protocol.js", "shared/runtime-policy.js"):
                 src = template_root / rel
                 if src.exists():
                     _copy_template_file(
                         recorder, src, adapter_root / rel,
-                        f"{adapter.install_root.removeprefix('./')}/{rel}",
+                        f"{adapter.install_root}/{rel}",
                     )
         elif adapter.id in ("omp", "omo"):
-            for rel in ("extensions/claude-protocol.js", "extensions/claude-protocol.ts", "shared/runtime-policy.js"):
+            for rel in ("extensions/claude-protocol.js", "shared/runtime-policy.js"):
                 src = template_root / rel
                 if src.exists():
                     _copy_template_file(
                         recorder, src, adapter_root / rel,
-                        f"{adapter.install_root.removeprefix('./')}/{rel}",
+                        f"{adapter.install_root}/{rel}",
                     )
 
         # 2. per-harness settings/config
@@ -1893,19 +1900,19 @@ def install_harness_adapters(
         shared_rules = TEMPLATES_DIR / "rules"
         if (template_root / "agents").exists():
             _copy_template_dir(recorder, template_root / "agents", adapter_root / "agents",
-                               f"{adapter.install_root.removeprefix('./')}/agents")
+                               f"{adapter.install_root}/agents")
         elif shared_agents.exists() and adapter.id in ("opencode", "omp", "omo", "pi"):
             _copy_template_dir(recorder, shared_agents, adapter_root / "agents",
-                               f"{adapter.install_root.removeprefix('./')}/agents")
+                               f"{adapter.install_root}/agents")
         if (template_root / "skills").exists():
             _copy_template_dir(recorder, template_root / "skills", adapter_root / "skills",
-                               f"{adapter.install_root.removeprefix('./')}/skills")
+                               f"{adapter.install_root}/skills")
         elif shared_skills.exists() and adapter.id in ("opencode", "omp", "omo", "pi"):
             _copy_template_dir(recorder, shared_skills, adapter_root / "skills",
-                               f"{adapter.install_root.removeprefix('./')}/skills")
+                               f"{adapter.install_root}/skills")
         if adapter.uses_shared_rules and shared_rules.exists():
             _copy_template_dir(recorder, shared_rules, adapter_root / "rules",
-                               f"{adapter.install_root.removeprefix('./')}/rules")
+                               f"{adapter.install_root}/rules")
 
         # 4. Write the body of AGENTS.md / CLAUDE.md FIRST so the file
         #    exists. If the Beads CLI then runs and rewrites the file

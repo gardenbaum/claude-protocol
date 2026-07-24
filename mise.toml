@@ -1,0 +1,3 @@
+[tasks.docs-sync-beads]
+description = "Refresh docs/vendor/beads/ from upstream (default: v1.1.0)"
+run = "bash scripts/docs-sync-beads.sh"

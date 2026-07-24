@@ -644,6 +644,39 @@ def _iter_hook_commands(settings_path: Path):
                 yield cmd
 
 
+# Module-level cache: which `bd init` flags the installed binary supports.
+# Populated lazily on first use; result is stable for the process lifetime.
+_BD_CAPABILITIES: dict[str, bool] = {}
+
+
+def _bd_supports_init_if_missing() -> bool:
+    """Return True if the installed `bd` supports --init-if-missing (v1.1.0+).
+
+    Used to keep bootstrap backward-compatible with Beads v1.0.x while
+    enabling the idempotent path on v1.1.0+.
+    """
+    if "init_if_missing" not in _BD_CAPABILITIES:
+        try:
+            help_proc = subprocess.run(
+                ["bd", "init", "--help"],
+                capture_output=True, text=True, shell=_SHELL,
+                timeout=5,
+            )
+            text = (help_proc.stdout or "") + (help_proc.stderr or "")
+            _BD_CAPABILITIES["init_if_missing"] = "--init-if-missing" in text
+        except (subprocess.TimeoutExpired, OSError):
+            _BD_CAPABILITIES["init_if_missing"] = False
+    return _BD_CAPABILITIES["init_if_missing"]
+
+
+def _bd_init_idempotent_cmd() -> list[str]:
+    """Build the `bd init` argv, adding --init-if-missing when supported."""
+    cmd = ["bd", "init"]
+    if _bd_supports_init_if_missing():
+        cmd.append("--init-if-missing")
+    return cmd
+
+
 def _is_within(child: Path, root: Path) -> bool:
     """Return True if `child` resolves to `root` or any descendant of `root`."""
     try:
@@ -921,8 +954,13 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
     if not beads_dir.exists():
         print("  - Initializing .beads directory...")
         try:
+            # --init-if-missing (Beads v1.1.0+) makes this idempotent: first
+            # run creates the DB, subsequent runs are no-ops instead of
+            # "database already exists" errors. Safe to omit on older bds
+            # because we only pass it when the flag is supported.
+            bd_init_cmd = _bd_init_idempotent_cmd()
             result = subprocess.run(
-                ["bd", "init"], cwd=project_dir,
+                bd_init_cmd, cwd=project_dir,
                 capture_output=True, text=True, shell=_SHELL,
                 stdin=subprocess.DEVNULL, timeout=15,
             )

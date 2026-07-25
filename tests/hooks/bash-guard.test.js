@@ -53,6 +53,20 @@ describe('bash-guard hook', () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe('');
     });
+
+    // Regression (F-02, security audit): a commit message whose text contains
+    // "--no-verify" must NOT be blocked — only the actual flag token is.
+    it('does NOT block git commit when --no-verify is only in the message text', () => {
+      const result = runHook(makeInput('git commit -m "explain: why we avoid --no-verify here"'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');  // no deny JSON
+    });
+
+    it('does NOT block git branch with --no-verify in the branch name', () => {
+      const result = runHook(makeInput('git checkout -b docs/avoid--no-verify'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');
+    });
   });
 
   describe('git worktree guard', () => {
@@ -220,6 +234,49 @@ describe('bash-guard hook', () => {
         expect(result.exitCode).toBe(0);
         expect(result.stdout).toContain('deny');
         expect(result.stdout).toContain('E.1');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    // Security F-01: --force must be matched as a standalone flag, not as
+    // a substring of the bead id or description. The previous
+    // implementation used /--force/.test(command) which a malicious
+    // description could bypass.
+    it('does NOT skip epic-children check when --force is inside a description or id', () => {
+      const showJson = JSON.stringify([{ id: 'E', issue_type: 'epic' }]);
+      const listJson = JSON.stringify([
+        { id: 'E.1', status: 'open' },
+      ]);
+      const { tmpDir, fakeBinDir } = setupEpicEnv(showJson, listJson);
+      try {
+        // The --force substring appears in the description, NOT as a flag.
+        const result = runHook(
+          makeInput('bd close E -d "force-bypass: this is a --force attempt"'),
+          { PATH: `${fakeBinDir}:${process.env.PATH}` },
+        );
+        expect(result.exitCode).toBe(0);
+        // The hook must still deny the close because E.1 is open.
+        expect(result.stdout).toContain('deny');
+        expect(result.stdout).toContain('E.1');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('DOES skip the check when --force is passed as a standalone flag', () => {
+      const showJson = JSON.stringify([{ id: 'E', issue_type: 'epic' }]);
+      const listJson = JSON.stringify([
+        { id: 'E.1', status: 'open' },
+      ]);
+      const { tmpDir, fakeBinDir } = setupEpicEnv(showJson, listJson);
+      try {
+        const result = runHook(
+          makeInput('bd close E --force'),
+          { PATH: `${fakeBinDir}:${process.env.PATH}` },
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).not.toContain('deny');
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }

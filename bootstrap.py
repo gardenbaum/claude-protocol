@@ -62,6 +62,30 @@ _SHELL = sys.platform == "win32"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 TEMPLATES_DIR = SCRIPT_DIR / "templates"
 
+# Subprocess timeouts (seconds). Centralised so tests can patch them and
+# avoid the "magic-number sprawl" smell (5/10/15/180 were sprinkled across
+# subprocess.run calls before this constant existed).
+_BD_TIMEOUT_SHORT = 5    # capability probes (bd --help, bd --version)
+_BD_TIMEOUT_DEFAULT = 15  # one-shot subcommands (bd init, bd doctor, sync)
+_BD_TIMEOUT_LONG = 180    # bd daemon / dolt startup — may be slow on first run
+_BD_OUTPUT_GRACE = 2      # seconds to wait for proc.communicate() after kill
+_GIT_TIMEOUT = 10         # git config / check-ignore fast-enough locally
+
+# SHA-256 of every shipped .cjs hook template. Bump these in lockstep with any
+# edit to templates/hooks/*.cjs. Used by copy_hooks() to fail loudly when a
+# template was tampered with (Supply-Chain hardening, F-04 in the security
+# audit): if any of the shipped hooks hash differently, refuse to install and
+# print the offending path. The user can re-bootstrap with
+# --allow-untouched-hooks to bypass (e.g. when developing a hook locally).
+_EXPECTED_HOOK_HASHES: dict = {
+    "bash-guard.cjs":                    "6278b654616962d18ab70f17f85969ba6363fb7bf37e652331ac8519e1267a00",
+    "enforce-branch-before-edit.cjs":    "0cdae545a8487cd1e71830569072561ccbc39d1062abc554fa0cd5f39f346e78",
+    "hook-utils.cjs":                    "5d8a3ad1d54a67ca4cc0db2d02e022e904cd59e485e1e12ba86ae893875eb99d",
+    "nudge-claude-md-update.cjs":        "7d29dba4809b13b1b01c7e1062d6a138dcc6007c2dc4ae8c4c0fc96cf885c167",
+    "session-start.cjs":                 "fd389759a2f402b8c7a753cddd7401b4d9480b65b5cb885daed8bfc94aa64402",
+    "validate-completion.cjs":           "808263542c73072d480b15c4507d974b9e51e157456bf5d5aa9962a546e2ec87",
+}
+
 # Make sure the sibling `adapters.py` module is importable whether this file
 # is executed as a script (`python bootstrap.py …`) or imported as a module
 # (the pytest path). Inserting at index 0 keeps the bundled Python paths
@@ -672,7 +696,7 @@ def _run_bd_with_timeout(args: list[str], cwd: "Path | None" = None,
     except subprocess.TimeoutExpired:
         proc.kill()
         try:
-            proc.communicate(timeout=2)
+            proc.communicate(timeout=_BD_OUTPUT_GRACE)
         except subprocess.TimeoutExpired:
             pass
         return None
@@ -691,7 +715,7 @@ def _bd_supports_init_if_missing() -> bool:
     """
     if "init_if_missing" not in _BD_CAPABILITIES:
         result = _run_bd_with_timeout(
-            ["bd", "init", "--help"], timeout=5,
+            ["bd", "init", "--help"], timeout=_BD_TIMEOUT_SHORT,
         )
         if result is None:
             _BD_CAPABILITIES["init_if_missing"] = False
@@ -917,7 +941,7 @@ def run_bd_doctor(project_dir: Path) -> None:
         result = subprocess.run(
             ["bd", "doctor"], cwd=project_dir,
             capture_output=True, text=True, shell=_SHELL,
-            stdin=subprocess.DEVNULL, timeout=15,
+            stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
         )
     except subprocess.TimeoutExpired:
         print("  bd doctor unavailable: timed out after 15s")
@@ -967,7 +991,7 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
                 try:
                     result = subprocess.run(
                         cmd, capture_output=True, text=True, shell=_SHELL,
-                        stdin=subprocess.DEVNULL, timeout=180,
+                        stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_LONG,
                     )
                 except subprocess.TimeoutExpired:
                     print(f"  - {method} install timed out, trying next method...")
@@ -990,7 +1014,7 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
         # "database already exists" errors. Safe to omit on older bds
         # because we only pass it when the flag is supported.
         bd_init_cmd = _bd_init_idempotent_cmd()
-        result = _run_bd_with_timeout(bd_init_cmd, cwd=project_dir, timeout=15)
+        result = _run_bd_with_timeout(bd_init_cmd, cwd=project_dir, timeout=_BD_TIMEOUT_DEFAULT)
         if result is None:
             print("  - bd init timed out (Dolt server not running?)")
         if result is None or result.returncode != 0:
@@ -1016,7 +1040,7 @@ def _run_bd(args: list, project_dir: Path, label: str) -> bool:
     try:
         result = subprocess.run(
             ["bd", *args], cwd=project_dir, capture_output=True, text=True,
-            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
+            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
         )
     except subprocess.TimeoutExpired:
         print(f"  - {label} timed out (Dolt server not running?)")
@@ -1040,7 +1064,7 @@ def _bd_config_get(project_dir: Path, key: str) -> str | None:
     try:
         result = subprocess.run(
             ["bd", "config", "get", key], cwd=project_dir, capture_output=True,
-            text=True, shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
+            text=True, shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -1065,7 +1089,7 @@ def _set_bd_config(project_dir: Path, key: str, value: str) -> bool:
         subprocess.run(
             ["bd", "config", "set", key, value], cwd=project_dir,
             capture_output=True, text=True, shell=_SHELL,
-            stdin=subprocess.DEVNULL, timeout=15,
+            stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         print(f"  - WARNING: set {key}={value} could not run: {exc}")
@@ -1089,7 +1113,7 @@ def _git_config_get(project_dir: Path, key: str) -> str | None:
         result = subprocess.run(
             ["git", "config", "--get", key], cwd=project_dir,
             capture_output=True, text=True,
-            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=10,
+            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -1178,16 +1202,61 @@ def copy_agents(recorder, project_name):
     print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
-def copy_hooks(recorder):
-    """Copy Node.js hooks (always overwrite — enforcement code), with backup + diff."""
+def copy_hooks(recorder, *, allow_untouched: bool = False):
+    """Copy Node.js hooks (always overwrite — enforcement code), with backup + diff.
+
+    Verifies each shipped .cjs template against ``_EXPECTED_HOOK_HASHES`` and
+    refuses to install any hook whose hash differs. The point is to surface
+    tampered templates early (a modified hook gets RCE on every Bash call),
+    not to block legitimate local development — pass ``allow_untouched=True``
+    to bypass (CLI flag: --allow-untouched-hooks).
+    """
     print("\n[3/6] Hooks", end="")
     start = len(recorder.changes)
     hooks_dir = recorder.project_dir / ".claude" / "hooks"
     if not recorder.dry_run:
         hooks_dir.mkdir(parents=True, exist_ok=True)
+    hash_mismatches: list = []
     for hook_file in (TEMPLATES_DIR / "hooks").glob("*.cjs"):
         dest = hooks_dir / hook_file.name
-        recorder.put_file(dest, hook_file.read_bytes(), f"hooks/{hook_file.name}")
+        raw = hook_file.read_bytes()
+        expected = _EXPECTED_HOOK_HASHES.get(hook_file.name)
+        if expected is None:
+            # Unknown hook — not in our hash table. Warn but install (the
+            # alternative is refusing to bootstrap entirely when a new hook
+            # is added without updating the constant).
+            print(f"\n  ! WARNING: {hook_file.name} not in _EXPECTED_HOOK_HASHES", end="")
+        else:
+            actual = hashlib.sha256(raw).hexdigest()
+            if actual != expected:
+                hash_mismatches.append((hook_file.name, expected, actual))
+                continue  # skip install
+        recorder.put_file(dest, raw, f"hooks/{hook_file.name}")
+    if hash_mismatches:
+        if allow_untouched:
+            for name, exp, act in hash_mismatches:
+                print(
+                    f"\n  ! BYPASS: {name} hash mismatch (expected {exp[:16]}…, "
+                    f"got {act[:16]}…) — installing anyway because "
+                    f"--allow-untouched-hooks was set",
+                    end="",
+                )
+                # Re-loop and install the mismatched hooks. The previous loop
+                # `continue`d past them, so we re-process explicitly.
+                hook_file = TEMPLATES_DIR / "hooks" / name
+                if hook_file.exists():
+                    recorder.put_file(
+                        hooks_dir / name, hook_file.read_bytes(),
+                        f"hooks/{name}",
+                    )
+        else:
+            msg_lines = [
+                "ABORT: shipped hook(s) failed hash verification (supply-chain check).",
+                "Re-run with --allow-untouched-hooks to install anyway (NOT recommended).",
+            ]
+            for name, exp, act in hash_mismatches:
+                msg_lines.append(f"  - {name}: expected {exp[:16]}…  got {act[:16]}…")
+            raise RuntimeError("\n".join(msg_lines))
     print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
@@ -1341,7 +1410,7 @@ def _path_is_gitignored(project_dir: Path, rel: str) -> bool:
         result = subprocess.run(
             ["git", "check-ignore", "-q", rel], cwd=project_dir,
             capture_output=True, text=True, shell=_SHELL,
-            stdin=subprocess.DEVNULL, timeout=10,
+            stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -1354,7 +1423,7 @@ def _path_is_tracked(project_dir: Path, rel: str) -> bool:
         result = subprocess.run(
             ["git", "ls-files", "--error-unmatch", rel], cwd=project_dir,
             capture_output=True, text=True, shell=_SHELL,
-            stdin=subprocess.DEVNULL, timeout=10,
+            stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -1472,6 +1541,7 @@ def bootstrap_project(
     project_dir: Path, project_name: str | None, with_rules: bool,
     force: bool, upgrade: bool, dry_run: bool, no_diff: bool = False,
     jsonl: bool = False, harness: str = "claude",
+    allow_untouched_hooks: bool = False,
 ) -> int:
     """Run bootstrap for a single project. Returns exit code (0 = success)."""
     if not dry_run:
@@ -1500,7 +1570,7 @@ def bootstrap_project(
 
     try:
         copy_agents(recorder, resolved_name)
-        copy_hooks(recorder)
+        copy_hooks(recorder, allow_untouched=allow_untouched_hooks)
         copy_rules_and_skills(recorder, with_rules)
         copy_settings_and_claude_md(recorder, resolved_name)
         install_harness_adapters(recorder, _resolve_harnesses(harness), resolved_name)
@@ -1584,6 +1654,7 @@ def run_batch_upgrade(
                 project_dir=child, project_name=None, with_rules=with_rules,
                 force=force, upgrade=True, dry_run=dry_run, no_diff=no_diff,
                 jsonl=jsonl, harness=harness,
+                allow_untouched_hooks=False,
             )
             if rc == 0:
                 upgraded += 1
@@ -1614,6 +1685,7 @@ def main():
     parser.add_argument("--all", dest="all_parent", default=None, metavar="PARENT_DIR", help="Batch upgrade: iterate direct subdirs of PARENT_DIR that contain .beads/. Implies --upgrade.")
     parser.add_argument("--jsonl", action="store_true", help="Opt into the readable .beads/issues.jsonl git-backup (default: Dolt-only sync, JSONL export disabled)")
     parser.add_argument("--harness", default="claude", help="Harness adapter to install (claude, codex, opencode, pi, omp, omo, all). Default: claude (v3.x compat).")
+    parser.add_argument("--allow-untouched-hooks", action="store_true", help="Bypass the SHA-256 hook-tamper check (for local hook development only). Default: refused.")
     parser.add_argument("--color", dest="color", action="store_const", const="always", default="auto", help="Force ANSI color output (default: auto-detect a TTY)")
     parser.add_argument("--no-color", dest="color", action="store_const", const="never", help="Disable ANSI color output (also honors the NO_COLOR env var)")
     args = parser.parse_args()
@@ -1634,6 +1706,7 @@ def main():
         with_rules=args.with_rules, force=args.force,
         upgrade=args.upgrade, dry_run=args.dry_run, no_diff=args.no_diff,
         jsonl=args.jsonl, harness=args.harness,
+        allow_untouched_hooks=args.allow_untouched_hooks,
     ))
 
 
@@ -1719,6 +1792,29 @@ def _write_settings_for_adapter(recorder: "ChangeRecorder", adapter: "_HarnessAd
     rel_key = adapter.settings_rel_key()
     if not src.exists():
         return
+    # Codex ships only a 4-line comment placeholder. If the user already has a
+    # real Codex CLI config.toml at .codex/config.toml, NEVER clobber it
+    # (Codex has no JSON-style merge — `recorder.put_file` would replace the
+    # whole file, silently destroying their model / sandbox / approval_policy
+    # settings). For other harnesses (opencode, omp, omo, pi) the shipped
+    # template IS the intended config, so we still write it.
+    if adapter.id == "codex" and dest.exists():
+        existing = dest.read_text(encoding="utf-8").strip()
+        # Anything beyond the placeholder comments = user-owned content.
+        non_comment_lines = [
+            line for line in existing.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if non_comment_lines:
+            # Existing user config: leave it alone. Only mark in manifest so
+            # the user sees we noticed the file.
+            if not recorder.dry_run:
+                recorder.changes.append({
+                    "key": rel_key, "action": "preserved",
+                    "label": "existing user config", "added": 0, "removed": 0,
+                    "diff": [], "backup": None,
+                })
+            return
     # Inject the per-harness path of the plugin/extension into the config so the
     # harness auto-loads it. Only do this when the template still references
     # the claude-style `.cjs` hook path.
@@ -1750,7 +1846,7 @@ def _write_beads_marker_for_adapter(recorder: "ChangeRecorder", adapter: "_Harne
             subprocess.run(
                 ["bd", "setup", recipe, "-o", str(out_path)],
                 cwd=project_dir, capture_output=True, text=True,
-                shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
+                shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
             )
         except (subprocess.TimeoutExpired, OSError):
             return
@@ -1810,15 +1906,6 @@ def _ensure_agent_instructions_exist(
     if not recorder.dry_run:
         dest.parent.mkdir(parents=True, exist_ok=True)
     recorder.put_file(dest, f"{marker}\n{body}".encode("utf-8"), rel_key, backup=False)
-
-
-def _install_legacy_claude_artifacts(recorder: "ChangeRecorder", project_name: str) -> None:
-    """Re-run the v3.x legacy copy flow for the claude adapter (no-op when the
-    caller's bootstrap_project has already done it)."""
-    # bootstrap_project already invokes copy_agents / copy_hooks /
-    # copy_rules_and_skills / copy_settings_and_claude_md for the claude
-    # adapter; nothing to do here.
-    return
 
 
 def install_harness_adapters(

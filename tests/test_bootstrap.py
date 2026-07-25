@@ -1343,7 +1343,7 @@ class TestBootstrapProjectErrorHandling:
             recorder.put_file(dest, b"agent content\n", "agents/a.md")
             return []
 
-        def fake_copy_hooks(recorder):
+        def fake_copy_hooks(recorder, *, allow_untouched=False):
             dest = tmp_path / ".claude" / "hooks" / "h.cjs"
             dest.parent.mkdir(parents=True, exist_ok=True)
             recorder.put_file(dest, b"hook content\n", "hooks/h.cjs")

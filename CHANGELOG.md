@@ -8,6 +8,17 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 
 ## [Unreleased]
 
+### Removed
+- **Russian localization files dropped** — `templates/rules-ru/` (complete
+  directory) and `templates/rules/communication-style.md` (Russian examples
+  with English scaffolding). Also `.claude/rules/communication-style.md`
+  and `.claude/rules/repository-scope.md` (both fully in Russian and
+  referencing the `weselow/claude-protocol` upstream, which is not this
+  fork's history). The English-only dev rules
+  (`implementation-standard`, `logging`, `tdd`, `debugging`,
+  `resilience`) remain and are the only `--with-rules` payload.
+  The `--with-rules` help text is updated to list the actual files copied.
+
 ### Security
 - **bash-guard `--force` bypass (F-01)** — the epic-close children audit
   used `command.includes('--force')` which a malicious bead description

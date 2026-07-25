@@ -1724,7 +1724,7 @@ def main():
     parser = argparse.ArgumentParser(description="Bootstrap beads orchestration")
     parser.add_argument("--project-name", default=None, help="Project name (auto-inferred if not provided)")
     parser.add_argument("--project-dir", default=".", help="Project directory")
-    parser.add_argument("--with-rules", action="store_true", help="Also copy dev rules (implementation-standard, logging, tdd)")
+    parser.add_argument("--with-rules", action="store_true", help="Also copy dev rules (implementation-standard, logging, tdd, debugging, resilience)")
     parser.add_argument("--force", action="store_true", help="Overwrite all files regardless of user modifications")
     parser.add_argument("--upgrade", action="store_true", help="Run init flow then cleanup obsolete items (uses existing manifest)")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without writing anything")

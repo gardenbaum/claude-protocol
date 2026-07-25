@@ -76,13 +76,13 @@ runHook('bash-guard', () => {
     // data loss). Match by argument structure (subcommand=worktree, action=add),
     // not a naive includes('add'), so branch/path names containing "add" and
     // `git worktree remove`/`prune`/`list` are unaffected.
-    const gitSubArgs = command.split(/\s+/).filter(Boolean).slice(1);
-    if (gitSubArgs[0] === 'worktree' && gitSubArgs[1] === 'add') {
+    const gitArgs = command.split(/\s+/).filter(Boolean).slice(1);
+    if (gitArgs[0] === 'worktree' && gitArgs[1] === 'add') {
       deny(
         'git worktree add is blocked — use `bd worktree create` instead.\n\n' +
         'Raw `git worktree add` creates a shadow .beads/ copy (process leak, data loss).\n' +
-        'To remove a worktree, prefer `bd worktree remove` (it has safety checks); ' +
-        'raw `git worktree remove` is a fallback.'
+        'For removing worktrees, raw `git worktree remove` is allowed ' +
+        '(bd worktree remove is broken on Windows, see u51).'
       );
     }
 

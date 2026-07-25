@@ -78,7 +78,7 @@ _GIT_TIMEOUT = 10         # git config / check-ignore fast-enough locally
 # print the offending path. The user can re-bootstrap with
 # --allow-untouched-hooks to bypass (e.g. when developing a hook locally).
 _EXPECTED_HOOK_HASHES: dict = {
-    "bash-guard.cjs":                    "6278b654616962d18ab70f17f85969ba6363fb7bf37e652331ac8519e1267a00",
+    "bash-guard.cjs":                    "a27b68b2c31c76849f55ee7a063c235b56ac98dcc9b7311425e2539811e6933b",
     "enforce-branch-before-edit.cjs":    "0cdae545a8487cd1e71830569072561ccbc39d1062abc554fa0cd5f39f346e78",
     "hook-utils.cjs":                    "5d8a3ad1d54a67ca4cc0db2d02e022e904cd59e485e1e12ba86ae893875eb99d",
     "nudge-claude-md-update.cjs":        "7d29dba4809b13b1b01c7e1062d6a138dcc6007c2dc4ae8c4c0fc96cf885c167",
@@ -1024,6 +1024,11 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
                 (beads_dir / "issues.jsonl").touch()
             print("  - Created .beads manually (run 'bd init' later with Dolt server running)")
 
+    # Stop bd's pre-commit shim from force-staging issues.jsonl (bd >=1.0.2
+    # defaults export.git-add=true, which re-stages the JSONL on every commit
+    # and can drop a duplicate /issues.jsonl at the repo root). Best-effort:
+    # never fail the whole bootstrap on this.
+    configure_beads_export(project_dir)
     # Wire automatic sync. Dolt is the canonical store/sync; the JSONL export is
     # opt-in (--jsonl). Best-effort; never fails the bootstrap.
     configure_beads_sync(project_dir, jsonl=jsonl)
@@ -1053,6 +1058,48 @@ def _run_bd(args: list, project_dir: Path, label: str) -> bool:
         print(f"  - WARNING: {label} failed" + (f": {detail}" if detail else ""))
         return False
     return True
+
+
+def configure_beads_export(project_dir: Path) -> bool:
+    """Disable bd's auto-staging of issues.jsonl (export.git-add=false).
+
+    Returns True on success. Never raises — if bd is missing or the command
+    fails/times out, logs a warning and returns False so bootstrap can continue.
+    """
+    if not shutil.which("bd"):
+        print("  - bd not available, skipping export.git-add config "
+              "(run 'bd config set export.git-add false' later)")
+        return False
+    try:
+        result = subprocess.run(
+            ["bd", "config", "set", "export.git-add", "false"],
+            cwd=project_dir, capture_output=True, text=True,
+            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
+        )
+    except subprocess.TimeoutExpired:
+        print("  - bd config set export.git-add timed out (Dolt server not running?)")
+        return False
+    except OSError as exc:
+        print(f"  - bd config set export.git-add failed to start: {exc}")
+        return False
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        print("  - WARNING: bd config set export.git-add false failed"
+              + (f": {detail}" if detail else ""))
+        return False
+    print("  - Set export.git-add=false (prevents duplicate /issues.jsonl)")
+    return True
+
+
+def copy_agents(
+    project_dir: Path, project_name: str,
+    manifest: dict, force: bool = False,
+) -> list:
+    """Copy code-reviewer and merge-supervisor templates."""
+    print("\n[2/6] Copying agents...")
+    agents_dir = project_dir / ".claude" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    skipped = []
 
 
 def _bd_config_get(project_dir: Path, key: str) -> str | None:

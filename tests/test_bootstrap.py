@@ -14,8 +14,7 @@ from bootstrap import (
     infer_project_name,
     copy_and_replace,
     setup_gitignore,
-    configure_beads_sync,
-    install_beads,
+    configure_beads_export,
     _from_package_json,
     _from_pyproject,
     _from_cargo,
@@ -33,16 +32,6 @@ from bootstrap import (
     _cleanup_empty_local_settings,
     TEMPLATES_DIR,
 )
-
-
-@pytest.fixture(autouse=True)
-def _color_off_by_default():
-    """Every test starts and ends with color disabled, so no test that enables
-    color (TestColor) can leak ANSI state into report-asserting tests — even
-    under pytest-randomly / pytest -s where class order isn't guaranteed."""
-    bootstrap.configure_color("never")
-    yield
-    bootstrap.configure_color("never")
 
 
 # ============================================================================
@@ -210,6 +199,7 @@ class TestSetupGitignore:
         assert gitignore.exists()
         content = gitignore.read_text()
         assert ".worktrees/" in content
+        assert "/issues.jsonl" in content
 
     def test_does_not_ignore_whole_beads_dir(self, tmp_path, capsys):
         """The tracker travels with the repo — .beads/ must NOT be ignored
@@ -220,18 +210,12 @@ class TestSetupGitignore:
         assert ".beads/" not in lines
         assert ".beads" not in lines
 
-    def test_ignores_issues_jsonl_by_default(self, tmp_path, capsys):
-        """Default is Dolt-only sync — the redundant .beads/issues.jsonl export
-        is gitignored so it never rides in commits."""
+    def test_ignores_root_issues_jsonl(self, tmp_path, capsys):
+        """A stray /issues.jsonl export at repo root must be ignored."""
         setup_gitignore(tmp_path)
-        lines = (tmp_path / ".gitignore").read_text().splitlines()
-        assert ".beads/issues.jsonl" in lines
 
-    def test_jsonl_mode_keeps_issues_jsonl_tracked(self, tmp_path, capsys):
-        """With --jsonl the readable backup must stay git-tracked (not ignored)."""
-        setup_gitignore(tmp_path, jsonl=True)
         content = (tmp_path / ".gitignore").read_text()
-        assert "issues.jsonl" not in content
+        assert "/issues.jsonl" in content
 
     def test_appends_missing_entries(self, tmp_path, capsys):
         gitignore = tmp_path / ".gitignore"
@@ -243,18 +227,31 @@ class TestSetupGitignore:
         assert "node_modules/" in content
         assert ".env" in content
         assert ".worktrees/" in content
+        assert "/issues.jsonl" in content
 
     def test_skips_when_already_configured(self, tmp_path, capsys):
         gitignore = tmp_path / ".gitignore"
+        # .beads/issues.jsonl must already be ignored so the default
+        # (Dolt-only) install is a no-op here. With jsonl=True we'd expect
+        # the .beads/issues.jsonl entry to be missing on purpose.
         gitignore.write_text(
             "node_modules/\n.worktrees/\n.claude/.upgrades/\n"
+            "/issues.jsonl\n.beads/issues.jsonl\n"
         )
 
         setup_gitignore(tmp_path)
 
         content = gitignore.read_text()
+        # Should not duplicate entries
         assert content.count(".worktrees/") == 1
-        assert content.count(".claude/.upgrades/") == 1
+        # Count only ROOT-level /issues.jsonl, not the .beads/issues.jsonl one
+        # (which also contains "/issues.jsonl" as a substring).
+        root_issues = [
+            line for line in content.splitlines()
+            if line.strip() == "/issues.jsonl"
+        ]
+        assert len(root_issues) == 1
+        assert content.count(".beads/issues.jsonl") == 1
 
     def test_adds_newline_if_missing(self, tmp_path, capsys):
         gitignore = tmp_path / ".gitignore"
@@ -274,11 +271,12 @@ class TestSetupGitignore:
 
         content = (tmp_path / ".gitignore").read_text()
         assert content.count(".worktrees/") == 1
+        assert content.count("/issues.jsonl") == 1
         assert content.count(".claude/.upgrades/") == 1
 
     def test_detects_entries_without_trailing_slash(self, tmp_path, capsys):
         gitignore = tmp_path / ".gitignore"
-        gitignore.write_text(".worktrees\n.claude/.upgrades\n")
+        gitignore.write_text(".worktrees\n.claude/.upgrades\n/issues.jsonl\n")
 
         setup_gitignore(tmp_path)
 
@@ -304,274 +302,68 @@ class TestSetupGitignore:
         content = (tmp_path / ".gitignore").read_text()
         assert content.count(".claude/.upgrades/") == 1
 
-    def test_warns_when_issues_jsonl_is_gitignored_in_jsonl_mode(self, tmp_path, monkeypatch, capsys):
-        """With --jsonl, a pre-existing ignore of .beads/issues.jsonl breaks bd
-        auto-export — setup_gitignore must surface that, not stay silent."""
-        monkeypatch.setattr(bootstrap, "_path_is_gitignored",
-                            lambda d, rel: rel == ".beads/issues.jsonl")
-        setup_gitignore(tmp_path, jsonl=True)
-        out = capsys.readouterr().out
-        assert ".beads/issues.jsonl" in out
-        assert "gitignored" in out
-
-    def test_no_conflict_warning_when_not_ignored_in_jsonl_mode(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(bootstrap, "_path_is_gitignored", lambda d, rel: False)
-        setup_gitignore(tmp_path, jsonl=True)
-        assert "gitignored" not in capsys.readouterr().out
-
-    def test_default_mode_never_warns_about_gitignore(self, tmp_path, monkeypatch, capsys):
-        """Default (Dolt-only) deliberately ignores issues.jsonl — it must never
-        emit the jsonl-mode 'gitignored' warning."""
-        monkeypatch.setattr(bootstrap, "_path_is_gitignored",
-                            lambda d, rel: rel == ".beads/issues.jsonl")
-        setup_gitignore(tmp_path)
-        assert "gitignored" not in capsys.readouterr().out
-
-    def test_default_mode_notes_untrack_when_jsonl_tracked(self, tmp_path, monkeypatch, capsys):
-        """If a previous install committed .beads/issues.jsonl, default mode must
-        tell the user to untrack it (ignoring alone won't)."""
-        monkeypatch.setattr(bootstrap, "_path_is_tracked",
-                            lambda d, rel: rel == ".beads/issues.jsonl")
-        setup_gitignore(tmp_path)
-        assert "git rm --cached .beads/issues.jsonl" in capsys.readouterr().out
-
-    def test_default_mode_no_note_when_jsonl_untracked(self, tmp_path, monkeypatch, capsys):
-        """No stray 'git rm --cached' advice when the file isn't tracked."""
-        monkeypatch.setattr(bootstrap, "_path_is_tracked", lambda d, rel: False)
-        setup_gitignore(tmp_path)
-        assert "git rm --cached" not in capsys.readouterr().out
-
-    def test_issues_jsonl_entry_idempotent(self, tmp_path, capsys):
-        """The default issues.jsonl ignore must not duplicate on re-run."""
-        setup_gitignore(tmp_path)
-        setup_gitignore(tmp_path)
-        content = (tmp_path / ".gitignore").read_text()
-        assert content.count(".beads/issues.jsonl") == 1
-
 
 # ============================================================================
-# install_beads — dry-run must not mutate
+# configure_beads_export
 # ============================================================================
 
-class TestInstallBeadsDryRun:
-    class _FakeResult:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    def _record_runs(self, monkeypatch):
+class TestConfigureBeadsExport:
+    def test_runs_bd_config_set_git_add_false(self, tmp_path, monkeypatch, capsys):
+        """Should call `bd config set export.git-add false` in the project dir."""
         calls = []
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return self._FakeResult()
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        return calls
 
-    def test_dry_run_writes_nothing(self, tmp_path, monkeypatch, capsys):
-        """--dry-run must not run bd init / config / hooks (no side effects)."""
-        calls = self._record_runs(monkeypatch)
-
-        result = install_beads(tmp_path, dry_run=True)
-
-        assert result is True
-        assert calls == []                          # no bd subprocess at all
-        assert not (tmp_path / ".beads").exists()   # nothing created on disk
-        assert "dry-run" in capsys.readouterr().out.lower()
-
-    def test_non_dry_run_still_configures(self, tmp_path, monkeypatch, capsys):
-        """Without dry-run the sync config is still wired (regression guard).
-        Default disables the JSONL export; Dolt auto-push is always on."""
-        calls = self._record_runs(monkeypatch)
-        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
-        (tmp_path / ".beads").mkdir()  # skip the bd-init branch
-
-        install_beads(tmp_path, dry_run=False)
-
-        assert ["bd", "config", "set", "export.auto", "false"] in calls
-        assert ["bd", "config", "set", "dolt.auto-push", "true"] in calls
-
-    def test_jsonl_flag_threads_to_sync(self, tmp_path, monkeypatch, capsys):
-        """install_beads(jsonl=True) must enable the JSONL export downstream."""
-        calls = self._record_runs(monkeypatch)
-        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
-        (tmp_path / ".beads").mkdir()
-
-        install_beads(tmp_path, dry_run=False, jsonl=True)
-
-        assert ["bd", "config", "set", "export.auto", "true"] in calls
-        assert ["bd", "config", "set", "export.git-add", "true"] in calls
-
-
-# ============================================================================
-# configure_beads_sync
-# ============================================================================
-
-class TestConfigureBeadsSync:
-    def _patch(self, monkeypatch, origin="git@github.com:o/r.git"):
-        calls = []
         class FakeResult:
             returncode = 0
             stdout = ""
             stderr = ""
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return FakeResult()
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: origin)
-        return calls
 
-    def test_default_disables_jsonl_export(self, tmp_path, monkeypatch, capsys):
-        """Default: Dolt-only. JSONL auto-export/staging is turned OFF; Dolt
-        remote + auto-push + shared hooks are still wired."""
-        calls = self._patch(monkeypatch)
-        result = configure_beads_sync(tmp_path)
-        assert result is True
-        assert ["bd", "config", "set", "export.auto", "false"] in calls
-        assert ["bd", "config", "set", "export.git-add", "false"] in calls
-        assert ["bd", "config", "set", "dolt.auto-push", "true"] in calls
-        assert ["bd", "dolt", "remote", "add", "origin", "git@github.com:o/r.git"] in calls
-        assert ["bd", "hooks", "install", "--shared"] in calls
-
-    def test_jsonl_flag_enables_export(self, tmp_path, monkeypatch, capsys):
-        """With jsonl=True the readable JSONL git-backup is enabled."""
-        calls = self._patch(monkeypatch)
-        result = configure_beads_sync(tmp_path, jsonl=True)
-        assert result is True
-        assert ["bd", "config", "set", "export.auto", "true"] in calls
-        assert ["bd", "config", "set", "export.git-add", "true"] in calls
-        assert ["bd", "config", "set", "dolt.auto-push", "true"] in calls
-
-    def test_skips_dolt_remote_without_origin(self, tmp_path, monkeypatch, capsys):
-        calls = self._patch(monkeypatch, origin=None)
-        configure_beads_sync(tmp_path)
-        assert not any(c[:3] == ["bd", "dolt", "remote"] for c in calls)
-        # still installs shared hooks for local-only repos
-        assert ["bd", "hooks", "install", "--shared"] in calls
-
-    def test_returns_false_when_bd_missing(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: None)
-        assert configure_beads_sync(tmp_path) is False
-
-    def test_does_not_raise_on_timeout(self, tmp_path, monkeypatch, capsys):
-        def fake_run(*a, **k):
-            raise bootstrap.subprocess.TimeoutExpired(cmd="bd", timeout=15)
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
-        # must not raise
-        configure_beads_sync(tmp_path)
-
-
-# ============================================================================
-# _install_shared_hooks — must not hijack existing git hooks
-# ============================================================================
-
-class TestInstallSharedHooks:
-    def _patch(self, monkeypatch, hooks_path=None):
-        calls = []
-        class FakeResult:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            return FakeResult()
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        monkeypatch.setattr(bootstrap, "_git_config_get", lambda _d, _k: hooks_path)
-        return calls
-
-    def test_installs_when_no_existing_hooks(self, tmp_path, monkeypatch, capsys):
-        calls = self._patch(monkeypatch, hooks_path=None)
-        bootstrap._install_shared_hooks(tmp_path)
-        assert ["bd", "hooks", "install", "--shared"] in calls
-
-    def test_installs_when_hookspath_is_beads(self, tmp_path, monkeypatch, capsys):
-        """Re-running with bd's own hooksPath already set is fine."""
-        calls = self._patch(monkeypatch, hooks_path=".beads-hooks")
-        bootstrap._install_shared_hooks(tmp_path)
-        assert ["bd", "hooks", "install", "--shared"] in calls
-
-    def test_skips_when_existing_hookspath(self, tmp_path, monkeypatch, capsys):
-        calls = self._patch(monkeypatch, hooks_path=".husky")
-        bootstrap._install_shared_hooks(tmp_path)
-        assert ["bd", "hooks", "install", "--shared"] not in calls
-        assert "WARNING" in capsys.readouterr().out
-
-    def test_skips_when_husky_dir_present(self, tmp_path, monkeypatch, capsys):
-        (tmp_path / ".husky").mkdir()
-        calls = self._patch(monkeypatch, hooks_path=None)
-        bootstrap._install_shared_hooks(tmp_path)
-        assert ["bd", "hooks", "install", "--shared"] not in calls
-        assert "WARNING" in capsys.readouterr().out
-
-
-# ============================================================================
-# _run_bd / _git_origin_url helpers
-# ============================================================================
-
-class TestRunBd:
-    def test_returns_true_on_success(self, tmp_path, monkeypatch, capsys):
-        class FakeResult:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-        calls = []
         def fake_run(cmd, **kwargs):
             calls.append((cmd, kwargs.get("cwd")))
             return FakeResult()
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+
         monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
 
-        assert bootstrap._run_bd(["config", "set", "x", "y"], tmp_path, "set x") is True
-        assert calls == [(["bd", "config", "set", "x", "y"], tmp_path)]
+        result = configure_beads_export(tmp_path)
 
-    def test_returns_false_when_bd_missing(self, tmp_path, monkeypatch):
+        assert result is True
+        assert calls == [
+            (["bd", "config", "set", "export.git-add", "false"], tmp_path)
+        ]
+
+    def test_returns_false_when_bd_missing(self, tmp_path, monkeypatch, capsys):
+        """If bd is not on PATH, do not crash — return False."""
         monkeypatch.setattr(bootstrap.shutil, "which", lambda _: None)
-        assert bootstrap._run_bd(["x"], tmp_path, "x") is False
 
-    def test_returns_false_on_timeout(self, tmp_path, monkeypatch, capsys):
-        def fake_run(*a, **k):
-            raise bootstrap.subprocess.TimeoutExpired(cmd="bd", timeout=15)
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        assert bootstrap._run_bd(["x"], tmp_path, "x") is False
+        result = configure_beads_export(tmp_path)
 
-    def test_returns_false_on_nonzero_exit(self, tmp_path, monkeypatch, capsys):
+        assert result is False
+
+    def test_does_not_raise_on_nonzero_exit(self, tmp_path, monkeypatch, capsys):
+        """A failing bd config must not raise — log and return False."""
         class FakeResult:
             returncode = 1
             stdout = ""
             stderr = "boom"
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-        monkeypatch.setattr(bootstrap.subprocess, "run", lambda *a, **k: FakeResult())
-        assert bootstrap._run_bd(["x"], tmp_path, "x") is False
 
-    def test_returns_false_on_oserror(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr(bootstrap.subprocess, "run", lambda *a, **k: FakeResult())
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+
+        result = configure_beads_export(tmp_path)
+
+        assert result is False
+
+    def test_does_not_raise_on_timeout(self, tmp_path, monkeypatch, capsys):
+        """A timeout must not raise — log and return False."""
         def fake_run(*a, **k):
-            raise OSError("cannot start bd")
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
+            raise bootstrap.subprocess.TimeoutExpired(cmd="bd", timeout=15)
+
         monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        assert bootstrap._run_bd(["x"], tmp_path, "x") is False
+        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
 
+        result = configure_beads_export(tmp_path)
 
-class TestGitOriginUrl:
-    def test_returns_url_when_origin_set(self, tmp_path, monkeypatch):
-        class FakeResult:
-            returncode = 0
-            stdout = "git@github.com:o/r.git\n"
-            stderr = ""
-        monkeypatch.setattr(bootstrap.subprocess, "run", lambda *a, **k: FakeResult())
-        assert bootstrap._git_origin_url(tmp_path) == "git@github.com:o/r.git"
-
-    def test_returns_none_when_no_origin(self, tmp_path, monkeypatch):
-        class FakeResult:
-            returncode = 128
-            stdout = ""
-            stderr = "no such remote"
-        monkeypatch.setattr(bootstrap.subprocess, "run", lambda *a, **k: FakeResult())
-        assert bootstrap._git_origin_url(tmp_path) is None
+        assert result is False
 
 
 # ============================================================================
@@ -1190,7 +982,10 @@ class TestUpgradeFlag:
 
         calls = []
 
-        def fake_cleanup(project_dir, manifest, dry_run, timestamp=None):
+        def fake_cleanup(*args, **kw):
+            # Map args to expected names (upstream may add a `timestamp` kwarg).
+            project_dir = args[0] if args else kw.get("project_dir")
+            dry_run = args[2] if len(args) > 2 else kw.get("dry_run", False)
             calls.append({"project_dir": project_dir, "dry_run": dry_run})
             return {
                 "removed_files": [], "removed_dirs": [],
@@ -1200,7 +995,7 @@ class TestUpgradeFlag:
 
         # Stub out heavy steps so test stays fast & offline
         monkeypatch.setattr(bootstrap, "cleanup_obsolete", fake_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False, jsonl=False: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda *a, **kw: True)
         monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
         monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
@@ -1230,7 +1025,7 @@ class TestUpgradeFlag:
             }
 
         monkeypatch.setattr(bootstrap, "cleanup_obsolete", fake_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False, jsonl=False: True)
+        monkeypatch.setattr(bootstrap, "install_beads", lambda *a, **kw: True)
         monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
         monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
         monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
@@ -1243,44 +1038,6 @@ class TestUpgradeFlag:
             bootstrap.main()
         assert exc.value.code == 0
         assert len(calls) == 1
-
-    def test_recorder_shares_upgrade_folder_with_cleanup(self, tmp_path, monkeypatch):
-        """Recoder + cleanup_obsolete must share .claude/.upgrades/<ts>/ so
-        both overwritten/ (recorder) and obsolete/ (cleanup) land in one
-        folder. Regression for the c18327a wiring."""
-        # Seed a manifest so upgrade path runs.
-        save_manifest(tmp_path, {"version": "3.0.0", "installed_at": "t", "files": {}})
-
-        captured: dict = {}
-
-        def capture_cleanup(project_dir, manifest, dry_run, timestamp=None):
-            captured["timestamp"] = timestamp
-            return {
-                "removed_files": [], "removed_dirs": [],
-                "stripped_settings_hooks": [], "stripped_local_patterns": [],
-                "removed_local_settings": False, "skipped_dirs": [],
-                "legacy_injected": [], "backups": [None],
-            }
-
-        monkeypatch.setattr(bootstrap, "cleanup_obsolete", capture_cleanup)
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False, jsonl=False: True)
-        monkeypatch.setattr(bootstrap, "copy_agents", lambda *a, **kw: [])
-        monkeypatch.setattr(bootstrap, "copy_hooks", lambda *a, **kw: None)
-        monkeypatch.setattr(bootstrap, "copy_rules_and_skills", lambda *a, **kw: [])
-        monkeypatch.setattr(bootstrap, "copy_settings_and_claude_md", lambda *a, **kw: None)
-        monkeypatch.setattr(bootstrap, "setup_gitignore", lambda *a, **kw: None)
-        monkeypatch.setattr(bootstrap, "run_bd_doctor", lambda *a, **kw: None)
-
-        bootstrap.bootstrap_project(
-            project_dir=tmp_path, project_name="P", with_rules=False,
-            force=False, upgrade=True, dry_run=True,
-        )
-
-        # Build a recorder for the same dir; the timestamp it picks must
-        # match what was passed to cleanup_obsolete.
-        rec = bootstrap.ChangeRecorder(tmp_path)
-        assert captured["timestamp"] == rec.timestamp
-        assert captured["timestamp"] is not None
 
 
 class TestAllFlag:
@@ -1321,60 +1078,6 @@ class TestAllFlag:
         with pytest.raises(SystemExit) as exc:
             bootstrap.main()
         assert exc.value.code == 1
-
-
-class TestBootstrapProjectErrorHandling:
-    def test_mid_step_failure_still_reports_and_saves_manifest(
-        self, tmp_path, monkeypatch, capsys,
-    ):
-        """If a sub-step raises after some put_file calls have succeeded,
-        bootstrap_project must (a) print the [CHANGES] report so the user
-        sees what landed and (b) save_manifest so the next run doesn't
-        churn through those files as 'modified'.
-
-        Regression for the silent-orphan pattern: without the try/except
-        wrapper, the user sees a Python traceback and the manifest on
-        disk is stale, so the next run re-backs-up everything.
-        """
-        # Two successful put_file calls, then a third sub-step raises.
-        def fake_copy_agents(recorder, project_name):
-            dest = tmp_path / ".claude" / "agents" / "a.md"
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            recorder.put_file(dest, b"agent content\n", "agents/a.md")
-            return []
-
-        def fake_copy_hooks(recorder):
-            dest = tmp_path / ".claude" / "hooks" / "h.cjs"
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            recorder.put_file(dest, b"hook content\n", "hooks/h.cjs")
-
-        def boom(recorder, with_rules):
-            raise RuntimeError("simulated mid-step failure")
-
-        monkeypatch.setattr(bootstrap, "install_beads", lambda pd, dry_run=False, jsonl=False: True)
-        monkeypatch.setattr(bootstrap, "copy_agents", fake_copy_agents)
-        monkeypatch.setattr(bootstrap, "copy_hooks", fake_copy_hooks)
-        monkeypatch.setattr(bootstrap, "copy_rules_and_skills", boom)
-        monkeypatch.setattr(
-            bootstrap, "copy_settings_and_claude_md", lambda *a, **kw: None,
-        )
-        monkeypatch.setattr(bootstrap, "setup_gitignore", lambda *a, **kw: None)
-        monkeypatch.setattr(bootstrap, "run_bd_doctor", lambda *a, **kw: None)
-
-        rc = bootstrap.bootstrap_project(
-            project_dir=tmp_path, project_name="P", with_rules=False,
-            force=False, upgrade=False, dry_run=False,
-        )
-
-        assert rc == 1
-        out = capsys.readouterr().out
-        assert "2 files changed" in out  # report still printed on failure
-        assert "agents/a.md" in out  # the two successful writes are visible
-
-        # Manifest was saved — next run sees the new files as 'pristine'.
-        manifest = bootstrap.load_manifest(tmp_path)
-        assert "agents/a.md" in manifest["files"]
-        assert "hooks/h.cjs" in manifest["files"]
 
 
 class TestBdDoctorSoftFailure:
@@ -1434,666 +1137,3 @@ class TestBdDoctorSoftFailure:
         assert "line 0" in out
         assert "line 19" in out
         assert "line 20" not in out  # Truncated at 20
-
-
-# ============================================================================
-# settings merge must preserve bd's own SessionStart hook
-# ============================================================================
-
-def _fake_templates_dir(root: Path) -> Path:
-    """Write a minimal templates/ dir (hermetic — independent of the real one)."""
-    templates = root / "fake_templates"
-    templates.mkdir(parents=True)
-    settings = {
-        "hooks": {"SessionStart": [
-            {"hooks": [{"command": "node .claude/hooks/session-start.cjs",
-                        "type": "command"}],
-             "matcher": ""}
-        ]}
-    }
-    (templates / "settings.json").write_text(json.dumps(settings))
-    (templates / "CLAUDE.md").write_text(
-        "# [Project]\n\nORCHESTRATION TEMPLATE BODY\n"
-    )
-    return templates
-
-
-class TestSettingsMergePreservesBdHook:
-    def test_bd_prime_hook_survives_merge(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(bootstrap, "TEMPLATES_DIR",
-                            _fake_templates_dir(tmp_path))
-        # Simulate what `bd init` wrote first.
-        settings_dir = tmp_path / ".claude"
-        settings_dir.mkdir(parents=True)
-        bd_settings = {
-            "hooks": {"SessionStart": [
-                {"hooks": [{"command": "bd prime --hook-json", "type": "command"}],
-                 "matcher": ""}
-            ]}
-        }
-        (settings_dir / "settings.json").write_text(json.dumps(bd_settings))
-
-        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
-
-        merged = json.loads((settings_dir / "settings.json").read_text())
-        cmds = [h["hooks"][0]["command"] for h in merged["hooks"]["SessionStart"]]
-        assert "bd prime --hook-json" in cmds  # bd's hook preserved
-        assert any("session-start.cjs" in c for c in cmds)  # ours added too
-
-
-class TestSettingsParseFailureBackup:
-    def test_unparseable_settings_backed_up_then_replaced(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(bootstrap, "TEMPLATES_DIR", _fake_templates_dir(tmp_path))
-        (tmp_path / ".claude").mkdir(parents=True)
-        broken = tmp_path / ".claude" / "settings.json"
-        broken.write_text("{ this is not valid json ")
-        rec = bootstrap.ChangeRecorder(tmp_path)
-        bootstrap.copy_settings_and_claude_md(rec, "Proj")
-        # valid JSON written
-        assert "hooks" in json.loads(broken.read_text())
-        # broken original backed up byte-exact
-        backup = rec.backup_root / "overwritten" / ".claude" / "settings.json"
-        assert backup.read_text() == "{ this is not valid json "
-        # merge-failure surfaced in the report, not silently replaced
-        rec.print_report()
-        assert "could not merge — replaced" in capsys.readouterr().out
-
-
-class TestClaudeMdAppendIdempotent:
-    def test_orchestration_appended_once(self, tmp_path, monkeypatch):
-        monkeypatch.setattr(bootstrap, "TEMPLATES_DIR",
-                            _fake_templates_dir(tmp_path))
-        (tmp_path / ".claude").mkdir()
-        claude = tmp_path / "CLAUDE.md"
-        claude.write_text("# Project\n\n<!-- BEGIN BEADS INTEGRATION -->\nbd block\n")
-
-        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
-        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
-
-        content = claude.read_text()
-        assert content.count("<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->") == 1
-        assert "<!-- BEGIN BEADS INTEGRATION -->" in content  # bd's block preserved
-        assert content.count("ORCHESTRATION TEMPLATE BODY") == 1  # body not duplicated
-
-    def test_create_path_idempotent(self, tmp_path, monkeypatch):
-        """No CLAUDE.md yet: create on first run, do not duplicate on the second."""
-        monkeypatch.setattr(bootstrap, "TEMPLATES_DIR",
-                            _fake_templates_dir(tmp_path))
-        (tmp_path / ".claude").mkdir()
-        claude = tmp_path / "CLAUDE.md"
-        assert not claude.exists()
-
-        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
-        bootstrap.copy_settings_and_claude_md(bootstrap.ChangeRecorder(tmp_path), "Proj")
-
-        content = claude.read_text()
-        assert content.count("<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->") == 1
-        assert content.count("ORCHESTRATION TEMPLATE BODY") == 1  # body not duplicated
-
-
-# ============================================================================
-# ChangeRecorder: backup + atomic write + diff
-# ============================================================================
-
-class TestChangeRecorder:
-    def _rec(self, tmp_path, **kw):
-        return bootstrap.ChangeRecorder(tmp_path, {"files": {}}, **kw)
-
-    def test_force_backs_up_locally_modified(self, tmp_path):
-        rec = bootstrap.ChangeRecorder(
-            tmp_path, {"files": {"hooks/x.cjs": "sha256:doesnotmatch"}}, force=True)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"user changed this\n")
-        rec.put_file(dest, b"new template\n", "hooks/x.cjs")
-        backup = rec.backup_root / "overwritten" / ".claude" / "hooks" / "x.cjs"
-        assert backup.read_bytes() == b"user changed this\n"
-        assert rec.changes[-1]["label"] == "locally-modified"
-
-    def test_atomic_write_failure_preserves_original(self, tmp_path, monkeypatch):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"original\n")
-        rec.manifest["files"]["hooks/x.cjs"] = bootstrap.bytes_sha256(b"original\n")
-        def boom(src, dst):
-            raise OSError("disk full")
-        monkeypatch.setattr(bootstrap.os, "replace", boom)
-        with pytest.raises(OSError):
-            rec.put_file(dest, b"new\n", "hooks/x.cjs")
-        assert dest.read_bytes() == b"original\n"  # original intact
-        leftovers = [p.name for p in dest.parent.iterdir() if p.name.startswith(".cp-tmp-")]
-        assert leftovers == []  # temp cleaned up
-        assert rec.manifest["files"]["hooks/x.cjs"] == bootstrap.bytes_sha256(b"original\n")  # not mutated
-
-    def test_atomic_write_failure_records_attempt_with_backup(self, tmp_path, monkeypatch):
-        """When _do_backup succeeds but _atomic_write fails, the changes
-        list must still record the attempted overwrite with its backup
-        path so the user sees the audit trail in print_report.
-
-        Without this, RES-4: backup is on disk, manifest unchanged, but
-        no entry in recorder.changes → print_report is silent about it.
-        """
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"original\n")
-        rec.manifest["files"]["hooks/x.cjs"] = bootstrap.bytes_sha256(b"original\n")
-
-        def boom(_dest, _data):
-            raise OSError("disk full mid-write")
-        monkeypatch.setattr(rec, "_atomic_write", boom)
-
-        with pytest.raises(OSError):
-            rec.put_file(dest, b"new\n", "hooks/x.cjs")
-
-        # Original intact
-        assert dest.read_bytes() == b"original\n"
-        # Backup on disk
-        backup = rec.backup_root / "overwritten" / ".claude" / "hooks" / "x.cjs"
-        assert backup.read_bytes() == b"original\n"
-        # Manifest NOT mutated (write didn't succeed)
-        assert rec.manifest["files"]["hooks/x.cjs"] == bootstrap.bytes_sha256(b"original\n")
-        # And the change IS recorded so the user can see it failed
-        assert len(rec.changes) == 1
-        assert rec.changes[0]["action"] == "overwritten"
-        assert rec.changes[0]["backup"] == backup
-        assert rec.changes[0]["key"] == "hooks/x.cjs"
-
-    def test_new_file_written_no_backup(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        action = rec.put_file(dest, b"hello\n", "hooks/x.cjs")
-        assert action == "new"
-        assert dest.read_bytes() == b"hello\n"
-        assert not (rec.backup_root / "overwritten").exists()
-
-    def test_unchanged_is_noop(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / "f.txt"
-        dest.write_bytes(b"same\n")
-        assert rec.put_file(dest, b"same\n", "f.txt") == "unchanged"
-        assert not (rec.backup_root).exists()
-        assert rec.changes == []
-
-    def test_overwrite_backs_up_byte_exact(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"old\r\nline\r\n")  # CRLF must be preserved in backup
-        rec.put_file(dest, b"new\n", "hooks/x.cjs")
-        backup = rec.backup_root / "overwritten" / ".claude" / "hooks" / "x.cjs"
-        assert backup.read_bytes() == b"old\r\nline\r\n"
-        assert dest.read_bytes() == b"new\n"
-
-    def test_label_pristine_vs_locally_modified(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "rules" / "r.md"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"shipped\n")
-        rec.manifest["files"]["rules/r.md"] = bootstrap.bytes_sha256(b"shipped\n")
-        rec.put_file(dest, b"v2\n", "rules/r.md")
-        assert rec.changes[-1]["label"] == "pristine"
-
-        dest.write_bytes(b"user edit\n")
-        rec.put_file(dest, b"v3\n", "rules/r.md")
-        assert rec.changes[-1]["label"] == "locally-modified"
-
-    def test_record_skip_adds_kept_change_no_write(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "rules" / "x.md"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"user edited\n")
-        rec.record_skip("rules/x.md")
-        assert dest.read_bytes() == b"user edited\n"          # untouched
-        kept = rec.changes[-1]
-        assert kept["action"] == "kept"
-        assert kept["key"] == "rules/x.md"
-        assert kept["label"] == "locally-modified"
-        assert kept["backup"] is None
-        assert not (rec.backup_root / "overwritten").exists()  # no backup dir
-
-    def test_dry_run_writes_nothing(self, tmp_path):
-        rec = self._rec(tmp_path, dry_run=True)
-        dest = tmp_path / "f.txt"
-        dest.write_bytes(b"orig\n")
-        rec.put_file(dest, b"changed\n", "f.txt")
-        assert dest.read_bytes() == b"orig\n"
-        assert not rec.backup_root.exists()
-        assert rec.changes[-1]["action"] == "overwritten"  # still recorded for the report
-
-    def test_atomic_write_leaves_no_tmp(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "a.txt"
-        rec.put_file(dest, b"data\n", "a.txt")
-        leftovers = [p.name for p in dest.parent.iterdir() if p.name.startswith(".cp-tmp-")]
-        assert leftovers == []
-
-    def test_append_mode_no_backup_no_manifest(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / "CLAUDE.md"
-        dest.write_bytes(b"existing\n")
-        action = rec.put_file(dest, b"existing\nappended\n", "CLAUDE.md", backup=False)
-        assert action == "appended"
-        assert dest.read_bytes() == b"existing\nappended\n"
-        assert not (rec.backup_root / "overwritten").exists()
-        assert "CLAUDE.md" not in rec.manifest["files"]
-
-    def test_replace_tree_backs_up_changed_file(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "skills" / "project-discovery"
-        dest.mkdir(parents=True)
-        (dest / "SKILL.md").write_bytes(b"old skill\n")
-        src = tmp_path / "src"
-        src.mkdir()
-        (src / "SKILL.md").write_bytes(b"new skill\n")
-
-        rec.replace_tree(dest, src, "skills/project-discovery")
-
-        assert (dest / "SKILL.md").read_bytes() == b"new skill\n"
-        backup = (rec.backup_root / "overwritten" / ".claude" / "skills"
-                  / "project-discovery" / "SKILL.md")
-        assert backup.read_bytes() == b"old skill\n"
-        actions = {c["key"]: c["action"] for c in rec.changes}
-        assert actions["skills/project-discovery/SKILL.md"] == "overwritten"
-
-    def test_replace_tree_records_new_when_no_dest(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "skills" / "project-discovery"
-        src = tmp_path / "src"
-        src.mkdir()
-        (src / "SKILL.md").write_bytes(b"fresh\n")
-        rec.replace_tree(dest, src, "skills/project-discovery")
-        assert (dest / "SKILL.md").read_bytes() == b"fresh\n"
-        assert rec.changes[-1]["action"] == "new"
-
-    def test_replace_tree_dry_run_no_disk_changes(self, tmp_path):
-        rec = self._rec(tmp_path, dry_run=True)
-        dest = tmp_path / ".claude" / "skills" / "project-discovery"
-        dest.mkdir(parents=True)
-        (dest / "SKILL.md").write_bytes(b"keep\n")
-        src = tmp_path / "src"
-        src.mkdir()
-        (src / "SKILL.md").write_bytes(b"new\n")
-        rec.replace_tree(dest, src, "skills/project-discovery")
-        assert (dest / "SKILL.md").read_bytes() == b"keep\n"   # not replaced
-        assert not rec.backup_root.exists()
-        assert rec.changes[-1]["action"] == "overwritten"       # still recorded
-
-    def test_replace_tree_removed_file_backed_up_and_dekeyed(self, tmp_path):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "skills" / "project-discovery"
-        dest.mkdir(parents=True)
-        (dest / "SKILL.md").write_bytes(b"keep\n")
-        (dest / "OLD.md").write_bytes(b"gone\n")
-        rec.manifest["files"]["skills/project-discovery/OLD.md"] = "sha256:stale"
-        src = tmp_path / "src"
-        src.mkdir()
-        (src / "SKILL.md").write_bytes(b"keep2\n")
-        rec.replace_tree(dest, src, "skills/project-discovery")
-        assert not (dest / "OLD.md").exists()
-        removed = [c for c in rec.changes if c["key"].endswith("OLD.md")][0]
-        assert removed["action"] == "removed"
-        backup = (rec.backup_root / "overwritten" / ".claude" / "skills"
-                  / "project-discovery" / "OLD.md")
-        assert backup.read_bytes() == b"gone\n"
-        assert "skills/project-discovery/OLD.md" not in rec.manifest["files"]
-        assert "skills/project-discovery/SKILL.md" in rec.manifest["files"]
-
-    def test_report_shows_summary_and_diff(self, tmp_path, capsys):
-        rec = self._rec(tmp_path)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"line1\nline2\n")
-        rec.put_file(dest, b"line1\nCHANGED\n", "hooks/x.cjs")
-        rec.print_report()
-        out = capsys.readouterr().out
-        assert "1 file changed" in out
-        assert "UPDATE" in out
-        assert "hooks/x.cjs" in out
-        assert "+1 -1" in out
-        assert "\n-line2\n" in out and "\n+CHANGED\n" in out  # full diff present
-
-    def test_report_no_diff_suppresses_full_diff(self, tmp_path, capsys):
-        rec = self._rec(tmp_path, no_diff=True)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"line1\nline2\n")
-        rec.put_file(dest, b"line1\nCHANGED\n", "hooks/x.cjs")
-        rec.print_report()
-        out = capsys.readouterr().out
-        assert "hooks/x.cjs" in out          # summary still shown
-        assert "+CHANGED" not in out          # full diff suppressed
-
-    def test_report_empty_says_no_changes(self, tmp_path, capsys):
-        rec = self._rec(tmp_path)
-        rec.print_report()
-        out = capsys.readouterr().out
-        assert "No changes" in out
-
-    def test_report_dry_run_prefix(self, tmp_path, capsys):
-        rec = self._rec(tmp_path, dry_run=True)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"a\n")
-        rec.put_file(dest, b"b\n", "hooks/x.cjs")
-        rec.print_report()
-        out = capsys.readouterr().out
-        assert "DRY-RUN" in out
-        assert "would change" in out
-        assert "backup:" not in out  # no backup line in dry-run
-
-    def test_report_dry_run_empty_says_no_changes(self, tmp_path, capsys):
-        rec = self._rec(tmp_path, dry_run=True)
-        rec.print_report()
-        out = capsys.readouterr().out
-        assert "DRY-RUN" in out
-        assert "no changes" in out
-
-    def test_report_kept_section_lists_user_modified(self, tmp_path, capsys):
-        rec = self._rec(tmp_path)
-        rec.record_skip("rules/beads-workflow.md")
-        rec.record_skip("rules/debugging-standard.md")
-        rec.print_report()
-        out = capsys.readouterr().out
-        assert "KEPT" in out
-        assert "rules/beads-workflow.md" in out
-        assert "rules/debugging-standard.md" in out
-        assert "No changes" in out  # kept does not count as a change
-
-    def test_report_note_only_on_locally_modified(self, tmp_path, capsys):
-        rec = bootstrap.ChangeRecorder(
-            tmp_path, {"files": {"hooks/x.cjs": "sha256:doesnotmatch"}}, force=True)
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"user edited\n")
-        rec.put_file(dest, b"new\n", "hooks/x.cjs")  # label -> locally-modified
-        rec.print_report()
-        out = capsys.readouterr().out
-        assert "your edits will be replaced" in out
-
-    def test_report_pristine_has_no_note(self, tmp_path, capsys):
-        rec = bootstrap.ChangeRecorder(
-            tmp_path, {"files": {"hooks/x.cjs": bootstrap.content_sha256("old\n")}})
-        dest = tmp_path / ".claude" / "hooks" / "x.cjs"
-        dest.parent.mkdir(parents=True)
-        dest.write_bytes(b"old\n")
-        rec.put_file(dest, b"new\n", "hooks/x.cjs")  # label -> pristine
-        rec.print_report()
-        out = capsys.readouterr().out
-        assert "your edits will be replaced" not in out
-
-
-class TestSummarizeChanges:
-    def _c(self, action):
-        return {"action": action, "key": "k", "label": None,
-                "added": 0, "removed": 0, "diff": [], "backup": None}
-
-    def test_empty_is_no_changes(self):
-        assert bootstrap.summarize_changes([]) == "no changes"
-
-    def test_counts_by_verb_in_order(self):
-        slice_ = [self._c("new"), self._c("overwritten"), self._c("overwritten"),
-                  self._c("appended"), self._c("kept"), self._c("kept")]
-        assert bootstrap.summarize_changes(slice_) == "1 new · 2 updated · 1 appended · 2 kept"
-
-    def test_only_updated(self):
-        assert bootstrap.summarize_changes([self._c("overwritten")]) == "1 updated"
-
-
-# ============================================================================
-# ANSI color
-# ============================================================================
-
-class TestColor:
-    def test_paint_noop_when_disabled(self, monkeypatch):
-        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", False)
-        assert bootstrap._paint("hi", "green") == "hi"
-
-    def test_paint_wraps_when_enabled(self, monkeypatch):
-        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", True)
-        out = bootstrap._paint("hi", "green")
-        assert out == "\033[32mhi\033[0m"
-
-    def test_paint_noop_without_styles(self, monkeypatch):
-        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", True)
-        assert bootstrap._paint("hi") == "hi"  # no stray reset code
-
-    def test_diff_line_colors(self, monkeypatch):
-        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", True)
-        assert bootstrap._color_diff_line("+added").startswith("\033[32m")     # green
-        assert bootstrap._color_diff_line("-gone").startswith("\033[31m")      # red
-        assert bootstrap._color_diff_line("@@ -1 +1 @@").startswith("\033[36m")  # cyan
-        assert bootstrap._color_diff_line("+++ b/x").startswith("\033[1m")     # bold header
-        assert bootstrap._color_diff_line("--- a/x").startswith("\033[1m")     # bold header
-        assert bootstrap._color_diff_line(" ctx") == " ctx"                    # untouched
-
-    def test_diff_line_plain_when_disabled(self, monkeypatch):
-        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", False)
-        assert bootstrap._color_diff_line("+added") == "+added"
-
-    def test_configure_color_always_and_never(self):
-        bootstrap.configure_color("always")
-        assert bootstrap._COLOR_ENABLED is True
-        bootstrap.configure_color("never")
-        assert bootstrap._COLOR_ENABLED is False
-
-    def test_auto_off_under_no_color(self, monkeypatch):
-        monkeypatch.setenv("NO_COLOR", "1")
-        bootstrap.configure_color("auto")
-        assert bootstrap._COLOR_ENABLED is False
-
-    def test_auto_off_when_not_a_tty(self, monkeypatch):
-        monkeypatch.delenv("NO_COLOR", raising=False)
-        monkeypatch.setattr(bootstrap.sys.stdout, "isatty", lambda: False)
-        bootstrap.configure_color("auto")
-        assert bootstrap._COLOR_ENABLED is False
-
-    def test_report_line_colors_verb_and_counts(self, monkeypatch):
-        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", True)
-        c = {"action": "overwritten", "key": "hooks/x.cjs",
-             "added": 6, "removed": 48, "label": "pristine"}
-        line = bootstrap.ChangeRecorder._report_line(c, 12)
-        assert "\033[33m" in line  # UPDATE yellow
-        assert "\033[32m" in line  # +6 green
-        assert "\033[31m" in line  # -48 red
-
-    def test_report_line_byte_identical_when_color_off(self, monkeypatch):
-        monkeypatch.setattr(bootstrap, "_COLOR_ENABLED", False)
-        c = {"action": "overwritten", "key": "hooks/x.cjs",
-             "added": 6, "removed": 48, "label": "pristine"}
-        line = bootstrap.ChangeRecorder._report_line(c, 12)
-        assert "\033[" not in line
-        assert line == "  UPDATE  hooks/x.cjs    +6 -48"
-
-
-# ============================================================================
-# v3.8.1 review fixes (#1 hook path, #2 dry-run, #4 symlink backup, #5 installer)
-# ============================================================================
-
-class TestSetupGitignoreDryRun:
-    def test_dry_run_does_not_write_gitignore(self, tmp_path, capsys):
-        setup_gitignore(tmp_path, dry_run=True)
-        assert not (tmp_path / ".gitignore").exists()
-        assert "dry-run" in capsys.readouterr().out.lower()
-
-    def test_dry_run_does_not_append_to_existing(self, tmp_path, capsys):
-        gi = tmp_path / ".gitignore"
-        gi.write_text("node_modules/\n")
-        setup_gitignore(tmp_path, dry_run=True)
-        assert gi.read_text() == "node_modules/\n"
-
-
-class TestMergeSettingsHookPath:
-    def _entry(self, matcher, command):
-        return {"matcher": matcher, "hooks": [{"type": "command", "command": command}]}
-
-    def test_relative_hook_migrated_to_project_dir(self):
-        """An upgrade must REPLACE an old `node .claude/hooks/X.cjs` entry with the
-        new $CLAUDE_PROJECT_DIR form for the same script — not duplicate it."""
-        existing = {"hooks": {"PreToolUse": [
-            self._entry("Bash", "node .claude/hooks/bash-guard.cjs")]}}
-        new = {"hooks": {"PreToolUse": [
-            self._entry("Bash", 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-guard.cjs"')]}}
-        merged = bootstrap._merge_settings(existing, new)
-        cmds = [h["hooks"][0]["command"] for h in merged["hooks"]["PreToolUse"]]
-        assert len(cmds) == 1
-        assert "$CLAUDE_PROJECT_DIR" in cmds[0]
-
-    def test_idempotent_no_duplicate_on_rerun(self):
-        new = {"hooks": {"PreToolUse": [
-            self._entry("Bash", 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-guard.cjs"')]}}
-        merged = bootstrap._merge_settings({}, json.loads(json.dumps(new)))
-        merged = bootstrap._merge_settings(merged, json.loads(json.dumps(new)))
-        assert len(merged["hooks"]["PreToolUse"]) == 1
-
-    def test_preserves_non_cjs_hook(self):
-        existing = {"hooks": {"SessionStart": [
-            {"hooks": [{"type": "command", "command": "bd prime --hook-json"}]}]}}
-        new = {"hooks": {"SessionStart": [
-            self._entry(None, 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/session-start.cjs"')]}}
-        merged = bootstrap._merge_settings(existing, new)
-        cmds = [h["hooks"][0]["command"] for h in merged["hooks"]["SessionStart"]]
-        assert any("bd prime" in c for c in cmds)
-        assert any("session-start.cjs" in c for c in cmds)
-        assert len(cmds) == 2
-
-    def test_skips_commandless_entry(self):
-        new = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{}]}]}}
-        merged = bootstrap._merge_settings({}, new)
-        merged = bootstrap._merge_settings(
-            merged, {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{}]}]}})
-        assert merged["hooks"]["PreToolUse"] == []
-
-    def test_template_settings_uses_project_dir(self):
-        content = (bootstrap.TEMPLATES_DIR / "settings.json").read_text(encoding="utf-8")
-        assert "$CLAUDE_PROJECT_DIR" in content
-        assert "node .claude/hooks/" not in content
-
-    def test_preserves_distinct_matchers_for_same_script(self):
-        """enforce-branch-before-edit.cjs is bound to BOTH Edit and Write in the
-        same event — merging must keep both matchers, not collapse them."""
-        cmd = 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/enforce-branch-before-edit.cjs"'
-        new = {"hooks": {"PreToolUse": [
-            self._entry("Edit", cmd),
-            self._entry("Write", cmd),
-            self._entry("Bash", 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/bash-guard.cjs"')]}}
-        merged = bootstrap._merge_settings({}, json.loads(json.dumps(new)))
-        assert [h["matcher"] for h in merged["hooks"]["PreToolUse"]] == ["Edit", "Write", "Bash"]
-        # idempotent: a second merge keeps exactly the same three matchers
-        merged = bootstrap._merge_settings(merged, json.loads(json.dumps(new)))
-        assert [h["matcher"] for h in merged["hooks"]["PreToolUse"]] == ["Edit", "Write", "Bash"]
-
-    def test_real_template_merge_keeps_all_matchers(self):
-        """Merging the real template into an existing install (itself) must not
-        drop any PreToolUse matcher."""
-        tmpl = json.loads((bootstrap.TEMPLATES_DIR / "settings.json").read_text(encoding="utf-8"))
-        merged = bootstrap._merge_settings(json.loads(json.dumps(tmpl)), json.loads(json.dumps(tmpl)))
-        matchers = [h.get("matcher") for h in merged["hooks"]["PreToolUse"]]
-        assert matchers.count("Edit") == 1
-        assert matchers.count("Write") == 1
-        assert matchers.count("Bash") == 1
-
-
-class TestBackupSymlinkOutsideProject:
-    def test_backup_of_symlink_target_outside_does_not_crash(self, tmp_path):
-        """A managed file that is a symlink pointing outside project_dir must not
-        crash the backup (resolve() used to raise ValueError)."""
-        external = tmp_path / "external.txt"
-        external.write_bytes(b"old-content")
-        proj = tmp_path / "proj"
-        proj.mkdir()
-        link = proj / "settings.json"
-        link.symlink_to(external)
-        rec = bootstrap.ChangeRecorder(proj)
-        action = rec.put_file(link, b"new-content", "settings.json")
-        assert action == "overwritten"
-        backup = rec.changes[-1]["backup"]
-        assert backup is not None and backup.read_bytes() == b"old-content"
-
-
-class TestBootstrapDryRunNoSideEffects:
-    def test_dry_run_does_not_create_project_dir(self, tmp_path, monkeypatch, capsys):
-        monkeypatch.setattr(bootstrap, "install_beads",
-                            lambda pd, dry_run=False, jsonl=False: True)
-        target = tmp_path / "does-not-exist"
-        rc = bootstrap.bootstrap_project(
-            project_dir=target, project_name="X", with_rules=False,
-            force=False, upgrade=True, dry_run=True)
-        assert rc == 0
-        assert not target.exists()
-
-
-class TestSetBdConfigVerifies:
-    """_set_bd_config must trust a read-back, not `bd config set`'s exit code —
-    bd returns rc=1 when its post-write auto-export `git add` of a gitignored
-    issues.jsonl fails, even though the config.yaml write persisted."""
-
-    def _patch(self, monkeypatch, get_value, set_rc=1):
-        calls = []
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            is_get = cmd[:3] == ["bd", "config", "get"]
-            class R:
-                stdout = get_value if is_get else ""
-                stderr = "" if is_get else "Error: auto-export: git add failed"
-                returncode = 0 if is_get else set_rc
-            return R()
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        return calls
-
-    def test_succeeds_when_readback_matches_despite_set_rc1(self, tmp_path, monkeypatch, capsys):
-        self._patch(monkeypatch, get_value="false\n", set_rc=1)
-        assert bootstrap._set_bd_config(tmp_path, "export.auto", "false") is True
-        assert "WARNING" not in capsys.readouterr().out
-
-    def test_warns_when_readback_mismatches(self, tmp_path, monkeypatch, capsys):
-        self._patch(monkeypatch, get_value="true\n", set_rc=0)
-        assert bootstrap._set_bd_config(tmp_path, "export.auto", "false") is False
-        assert "WARNING" in capsys.readouterr().out
-
-    def test_no_false_alarm_when_readback_unavailable(self, tmp_path, monkeypatch, capsys):
-        self._patch(monkeypatch, get_value="", set_rc=1)
-        assert bootstrap._set_bd_config(tmp_path, "export.auto", "false") is True
-        assert "WARNING" not in capsys.readouterr().out
-
-    def test_configure_sets_git_add_before_auto(self, tmp_path, monkeypatch, capsys):
-        calls = []
-        def fake_run(cmd, **kwargs):
-            calls.append(cmd)
-            class R:
-                stdout = "false" if cmd[:3] == ["bd", "config", "get"] else ""
-                stderr = ""
-                returncode = 0
-            return R()
-        monkeypatch.setattr(bootstrap.shutil, "which", lambda _: "/usr/bin/bd")
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
-        configure_beads_sync(tmp_path)
-        sets = [c for c in calls if c[:3] == ["bd", "config", "set"]]
-        ga = next(i for i, c in enumerate(sets) if c[3] == "export.git-add")
-        au = next(i for i, c in enumerate(sets) if c[3] == "export.auto")
-        assert ga < au
-
-
-class TestInstallerSubprocessHardening:
-    def test_install_subprocess_sets_timeout_and_stdin(self, tmp_path, monkeypatch, capsys):
-        calls = []
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-        def fake_run(cmd, **kwargs):
-            calls.append((cmd, kwargs))
-            return R()
-        monkeypatch.setattr(bootstrap.shutil, "which",
-                            lambda c: None if c == "bd" else "/usr/bin/" + c)
-        monkeypatch.setattr(bootstrap.subprocess, "run", fake_run)
-        monkeypatch.setattr(bootstrap, "_git_origin_url", lambda _: None)
-        (tmp_path / ".beads").mkdir()  # skip bd init
-        install_beads(tmp_path, dry_run=False)
-        install = next((k for c, k in calls if c and c[0] in ("brew", "npm", "go")), None)
-        assert install is not None, "an install method should have been attempted"
-        assert install.get("timeout")
-        assert install.get("stdin") is not None

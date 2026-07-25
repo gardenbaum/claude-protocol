@@ -55,3 +55,4 @@ Thumbs.db
 # Local install artifacts (this repo uses templates/ as source; .claude/ is a local install target)
 /.claude/.manifest.json
 /.claude/.upgrades/
+beads_orchestrator_errors.log

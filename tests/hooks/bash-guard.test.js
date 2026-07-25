@@ -53,6 +53,65 @@ describe('bash-guard hook', () => {
       expect(result.exitCode).toBe(0);
       expect(result.stdout).toBe('');
     });
+
+    // Regression (F-02, security audit): a commit message whose text contains
+    // "--no-verify" must NOT be blocked — only the actual flag token is.
+    it('does NOT block git commit when --no-verify is only in the message text', () => {
+      const result = runHook(makeInput('git commit -m "explain: why we avoid --no-verify here"'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');  // no deny JSON
+    });
+
+    it('does NOT block git branch with --no-verify in the branch name', () => {
+      const result = runHook(makeInput('git checkout -b docs/avoid--no-verify'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');
+    });
+  });
+
+  describe('git worktree guard', () => {
+    it('denies git worktree add', () => {
+      const result = runHook(makeInput('git worktree add ../foo -b mybranch'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('deny');
+      expect(result.stdout).toContain('bd worktree create');
+    });
+
+    it('denies git worktree add with extra flags and paths', () => {
+      const result = runHook(makeInput('git worktree add --detach .worktrees/bd-1 HEAD'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toContain('deny');
+    });
+
+    it('allows git worktree remove', () => {
+      const result = runHook(makeInput('git worktree remove --force .worktrees/bd-1'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');
+    });
+
+    it('allows git worktree prune', () => {
+      const result = runHook(makeInput('git worktree prune'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');
+    });
+
+    it('allows git worktree list', () => {
+      const result = runHook(makeInput('git worktree list'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');
+    });
+
+    it('does not match "add" appearing elsewhere (e.g. branch named add)', () => {
+      const result = runHook(makeInput('git worktree remove add-feature'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');
+    });
+
+    it('does not block plain git add', () => {
+      const result = runHook(makeInput('git add -A'));
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe('');
+    });
   });
 
   describe('git worktree guard', () => {
@@ -166,12 +225,16 @@ describe('bash-guard hook', () => {
       const fakeBinDir = path.join(tmpDir, 'bin');
       fs.mkdirSync(fakeBinDir);
 
-      // Fake bd: responds to `bd show <id> --json` and `bd list --json`
+      // Fake bd: responds to `bd show <id> --json` and `bd list --json --all`
+      // (the hook now passes --all so closed children are visible to the
+      // completeness check; without it, a fully-closed epic would slip
+      // through the audit).
       const fakeBd = path.join(fakeBinDir, 'bd');
       fs.writeFileSync(fakeBd, [
         '#!/bin/sh',
         `case "$*" in`,
         `  "show E --json") echo '${showJson}' ;;`,
+        `  "list --json --all") echo '${listJson}' ;;`,
         `  "list --json") echo '${listJson}' ;;`,
         `  *) exit 1 ;;`,
         'esac',
@@ -216,6 +279,49 @@ describe('bash-guard hook', () => {
         expect(result.exitCode).toBe(0);
         expect(result.stdout).toContain('deny');
         expect(result.stdout).toContain('E.1');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    // Security F-01: --force must be matched as a standalone flag, not as
+    // a substring of the bead id or description. The previous
+    // implementation used /--force/.test(command) which a malicious
+    // description could bypass.
+    it('does NOT skip epic-children check when --force is inside a description or id', () => {
+      const showJson = JSON.stringify([{ id: 'E', issue_type: 'epic' }]);
+      const listJson = JSON.stringify([
+        { id: 'E.1', status: 'open' },
+      ]);
+      const { tmpDir, fakeBinDir } = setupEpicEnv(showJson, listJson);
+      try {
+        // The --force substring appears in the description, NOT as a flag.
+        const result = runHook(
+          makeInput('bd close E -d "force-bypass: this is a --force attempt"'),
+          { PATH: `${fakeBinDir}:${process.env.PATH}` },
+        );
+        expect(result.exitCode).toBe(0);
+        // The hook must still deny the close because E.1 is open.
+        expect(result.stdout).toContain('deny');
+        expect(result.stdout).toContain('E.1');
+      } finally {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
+    });
+
+    it('DOES skip the check when --force is passed as a standalone flag', () => {
+      const showJson = JSON.stringify([{ id: 'E', issue_type: 'epic' }]);
+      const listJson = JSON.stringify([
+        { id: 'E.1', status: 'open' },
+      ]);
+      const { tmpDir, fakeBinDir } = setupEpicEnv(showJson, listJson);
+      try {
+        const result = runHook(
+          makeInput('bd close E --force'),
+          { PATH: `${fakeBinDir}:${process.env.PATH}` },
+        );
+        expect(result.exitCode).toBe(0);
+        expect(result.stdout).not.toContain('deny');
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }

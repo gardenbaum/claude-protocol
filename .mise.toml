@@ -1,6 +1,6 @@
 [tools]
 node = "24"
-python = "3.12"
+python = "3.14.6"
 
 # Refresh the vendored Beads docs to the latest upstream. The result is committed so every
 # clone has it — this task is only for updating. Source of truth is Beads' curated docs site

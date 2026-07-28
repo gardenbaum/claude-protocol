@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 
-## [Unreleased]
+## [3.9.0] - 2026-07-28
 
 ### Removed
 - **Russian localization files dropped** — `templates/rules-ru/` (complete
@@ -187,12 +187,4 @@ Commit messages follow [Conventional Commits](https://www.conventionalcommits.or
 
 [3.8.1]: #comparing-v3.8.0..v3.8.1
 [3.8.2]: #comparing-v3.8.1..v3.8.2
-
-<!-- Reference template (delete on first release):
-### Added — new features
-### Changed — changes in existing functionality
-### Deprecated — soon-to-be removed features
-### Removed — now-removed features
-### Fixed — bug fixes
-### Security — vulnerability fixes
--->
+[3.9.0]: https://github.com/gardenbaum/claude-protocol/compare/v3.8.2...v3.9.0

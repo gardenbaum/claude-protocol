@@ -34,9 +34,64 @@ try:
 except ImportError:
     tomllib = None
 
+try:
+    import yaml as _yaml  # optional, used for omp/pi config.yml
+except ImportError:
+    _yaml = None
+
+try:
+    from adapters import (
+        CLAUDE as _CLAUDE,
+        CODEX as _CODEX,
+        OPENCODE as _OPENCODE,
+        PI as _PI,
+        OMP as _OMP,
+        OMO as _OMO,
+        ALL_ADAPTERS as _ALL_ADAPTERS,
+        HarnessAdapter as _HarnessAdapter,
+        resolve as _resolve_harnesses,
+        validate as _validate_harness,
+    )
+except ImportError:  # pragma: no cover - adapters.py must ship with bootstrap.py
+    _ALL_ADAPTERS = ()
+    _HarnessAdapter = None
+    _resolve_harnesses = None
+    _validate_harness = None
+
 _SHELL = sys.platform == "win32"
 SCRIPT_DIR = Path(__file__).parent.resolve()
 TEMPLATES_DIR = SCRIPT_DIR / "templates"
+
+# Subprocess timeouts (seconds). Centralised so tests can patch them and
+# avoid the "magic-number sprawl" smell (5/10/15/180 were sprinkled across
+# subprocess.run calls before this constant existed).
+_BD_TIMEOUT_SHORT = 5    # capability probes (bd --help, bd --version)
+_BD_TIMEOUT_DEFAULT = 15  # one-shot subcommands (bd init, bd doctor, sync)
+_BD_TIMEOUT_LONG = 180    # bd daemon / dolt startup — may be slow on first run
+_BD_OUTPUT_GRACE = 2      # seconds to wait for proc.communicate() after kill
+_GIT_TIMEOUT = 10         # git config / check-ignore fast-enough locally
+
+# SHA-256 of every shipped .cjs hook template. Bump these in lockstep with any
+# edit to templates/hooks/*.cjs. Used by copy_hooks() to fail loudly when a
+# template was tampered with (Supply-Chain hardening, F-04 in the security
+# audit): if any of the shipped hooks hash differently, refuse to install and
+# print the offending path. The user can re-bootstrap with
+# --allow-untouched-hooks to bypass (e.g. when developing a hook locally).
+_EXPECTED_HOOK_HASHES: dict = {
+    "bash-guard.cjs":                    "a27b68b2c31c76849f55ee7a063c235b56ac98dcc9b7311425e2539811e6933b",
+    "enforce-branch-before-edit.cjs":    "0cdae545a8487cd1e71830569072561ccbc39d1062abc554fa0cd5f39f346e78",
+    "hook-utils.cjs":                    "5d8a3ad1d54a67ca4cc0db2d02e022e904cd59e485e1e12ba86ae893875eb99d",
+    "nudge-claude-md-update.cjs":        "7d29dba4809b13b1b01c7e1062d6a138dcc6007c2dc4ae8c4c0fc96cf885c167",
+    "session-start.cjs":                 "fd389759a2f402b8c7a753cddd7401b4d9480b65b5cb885daed8bfc94aa64402",
+    "validate-completion.cjs":           "808263542c73072d480b15c4507d974b9e51e157456bf5d5aa9962a546e2ec87",
+}
+
+# Make sure the sibling `adapters.py` module is importable whether this file
+# is executed as a script (`python bootstrap.py …`) or imported as a module
+# (the pytest path). Inserting at index 0 keeps the bundled Python paths
+# in the list too.
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
 
 
 # ---------------------------------------------------------------------------
@@ -613,6 +668,71 @@ def _iter_hook_commands(settings_path: Path):
                 yield cmd
 
 
+# Module-level cache: which `bd init` flags the installed binary supports.
+# Populated lazily on first use; result is stable for the process lifetime.
+_BD_CAPABILITIES: dict[str, bool] = {}
+
+
+def _run_bd_with_timeout(args: list[str], cwd: "Path | None" = None,
+                         timeout: float = 15.0) -> "subprocess.CompletedProcess | None":
+    """Run a `bd` command, killing the process if it hangs past `timeout`.
+
+    Unlike `subprocess.run(..., timeout=...)`, this kills the child process
+    tree on timeout instead of leaving a zombie that holds the `.beads`
+    Dolt lock. Returns None on timeout, the CompletedProcess otherwise.
+    Used for the bootstrap's hang-prone `bd init` and capability-probe
+    calls so a wedged Dolt server can't block the installer.
+    """
+    try:
+        proc = subprocess.Popen(
+            args, cwd=cwd,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL, text=True, shell=_SHELL,
+        )
+    except OSError:
+        return None
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=_BD_OUTPUT_GRACE)
+        except subprocess.TimeoutExpired:
+            pass
+        return None
+    return subprocess.CompletedProcess(
+        args=args, returncode=proc.returncode,
+        stdout=stdout or "", stderr=stderr or "",
+    )
+
+
+def _bd_supports_init_if_missing() -> bool:
+    """Return True if the installed `bd` supports --init-if-missing (v1.1.0+).
+
+    Used to keep bootstrap backward-compatible with Beads v1.0.x while
+    enabling the idempotent path on v1.1.0+. Uses a short timeout and
+    kills the child on hang so a wedged `bd` can't block the installer.
+    """
+    if "init_if_missing" not in _BD_CAPABILITIES:
+        result = _run_bd_with_timeout(
+            ["bd", "init", "--help"], timeout=_BD_TIMEOUT_SHORT,
+        )
+        if result is None:
+            _BD_CAPABILITIES["init_if_missing"] = False
+        else:
+            text = (result.stdout or "") + (result.stderr or "")
+            _BD_CAPABILITIES["init_if_missing"] = "--init-if-missing" in text
+    return _BD_CAPABILITIES["init_if_missing"]
+
+
+def _bd_init_idempotent_cmd() -> list[str]:
+    """Build the `bd init` argv, adding --init-if-missing when supported."""
+    cmd = ["bd", "init"]
+    if _bd_supports_init_if_missing():
+        cmd.append("--init-if-missing")
+    return cmd
+
+
 def _is_within(child: Path, root: Path) -> bool:
     """Return True if `child` resolves to `root` or any descendant of `root`."""
     try:
@@ -821,7 +941,7 @@ def run_bd_doctor(project_dir: Path) -> None:
         result = subprocess.run(
             ["bd", "doctor"], cwd=project_dir,
             capture_output=True, text=True, shell=_SHELL,
-            stdin=subprocess.DEVNULL, timeout=15,
+            stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
         )
     except subprocess.TimeoutExpired:
         print("  bd doctor unavailable: timed out after 15s")
@@ -871,7 +991,7 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
                 try:
                     result = subprocess.run(
                         cmd, capture_output=True, text=True, shell=_SHELL,
-                        stdin=subprocess.DEVNULL, timeout=180,
+                        stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_LONG,
                     )
                 except subprocess.TimeoutExpired:
                     print(f"  - {method} install timed out, trying next method...")
@@ -889,14 +1009,13 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
     beads_dir = project_dir / ".beads"
     if not beads_dir.exists():
         print("  - Initializing .beads directory...")
-        try:
-            result = subprocess.run(
-                ["bd", "init"], cwd=project_dir,
-                capture_output=True, text=True, shell=_SHELL,
-                stdin=subprocess.DEVNULL, timeout=15,
-            )
-        except subprocess.TimeoutExpired:
-            result = None
+        # --init-if-missing (Beads v1.1.0+) makes this idempotent: first
+        # run creates the DB, subsequent runs are no-ops instead of
+        # "database already exists" errors. Safe to omit on older bds
+        # because we only pass it when the flag is supported.
+        bd_init_cmd = _bd_init_idempotent_cmd()
+        result = _run_bd_with_timeout(bd_init_cmd, cwd=project_dir, timeout=_BD_TIMEOUT_DEFAULT)
+        if result is None:
             print("  - bd init timed out (Dolt server not running?)")
         if result is None or result.returncode != 0:
             beads_dir.mkdir(exist_ok=True)
@@ -905,6 +1024,11 @@ def install_beads(project_dir: Path, dry_run: bool = False, jsonl: bool = False)
                 (beads_dir / "issues.jsonl").touch()
             print("  - Created .beads manually (run 'bd init' later with Dolt server running)")
 
+    # Stop bd's pre-commit shim from force-staging issues.jsonl (bd >=1.0.2
+    # defaults export.git-add=true, which re-stages the JSONL on every commit
+    # and can drop a duplicate /issues.jsonl at the repo root). Best-effort:
+    # never fail the whole bootstrap on this.
+    configure_beads_export(project_dir)
     # Wire automatic sync. Dolt is the canonical store/sync; the JSONL export is
     # opt-in (--jsonl). Best-effort; never fails the bootstrap.
     configure_beads_sync(project_dir, jsonl=jsonl)
@@ -921,7 +1045,7 @@ def _run_bd(args: list, project_dir: Path, label: str) -> bool:
     try:
         result = subprocess.run(
             ["bd", *args], cwd=project_dir, capture_output=True, text=True,
-            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
+            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
         )
     except subprocess.TimeoutExpired:
         print(f"  - {label} timed out (Dolt server not running?)")
@@ -936,6 +1060,48 @@ def _run_bd(args: list, project_dir: Path, label: str) -> bool:
     return True
 
 
+def configure_beads_export(project_dir: Path) -> bool:
+    """Disable bd's auto-staging of issues.jsonl (export.git-add=false).
+
+    Returns True on success. Never raises — if bd is missing or the command
+    fails/times out, logs a warning and returns False so bootstrap can continue.
+    """
+    if not shutil.which("bd"):
+        print("  - bd not available, skipping export.git-add config "
+              "(run 'bd config set export.git-add false' later)")
+        return False
+    try:
+        result = subprocess.run(
+            ["bd", "config", "set", "export.git-add", "false"],
+            cwd=project_dir, capture_output=True, text=True,
+            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
+        )
+    except subprocess.TimeoutExpired:
+        print("  - bd config set export.git-add timed out (Dolt server not running?)")
+        return False
+    except OSError as exc:
+        print(f"  - bd config set export.git-add failed to start: {exc}")
+        return False
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        print("  - WARNING: bd config set export.git-add false failed"
+              + (f": {detail}" if detail else ""))
+        return False
+    print("  - Set export.git-add=false (prevents duplicate /issues.jsonl)")
+    return True
+
+
+def copy_agents(
+    project_dir: Path, project_name: str,
+    manifest: dict, force: bool = False,
+) -> list:
+    """Copy code-reviewer and merge-supervisor templates."""
+    print("\n[2/6] Copying agents...")
+    agents_dir = project_dir / ".claude" / "agents"
+    agents_dir.mkdir(parents=True, exist_ok=True)
+    skipped = []
+
+
 def _bd_config_get(project_dir: Path, key: str) -> str | None:
     """Read a bd config value (the last non-empty stdout line), or None.
 
@@ -945,7 +1111,7 @@ def _bd_config_get(project_dir: Path, key: str) -> str | None:
     try:
         result = subprocess.run(
             ["bd", "config", "get", key], cwd=project_dir, capture_output=True,
-            text=True, shell=_SHELL, stdin=subprocess.DEVNULL, timeout=15,
+            text=True, shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -970,7 +1136,7 @@ def _set_bd_config(project_dir: Path, key: str, value: str) -> bool:
         subprocess.run(
             ["bd", "config", "set", key, value], cwd=project_dir,
             capture_output=True, text=True, shell=_SHELL,
-            stdin=subprocess.DEVNULL, timeout=15,
+            stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
         )
     except (subprocess.TimeoutExpired, OSError) as exc:
         print(f"  - WARNING: set {key}={value} could not run: {exc}")
@@ -994,7 +1160,7 @@ def _git_config_get(project_dir: Path, key: str) -> str | None:
         result = subprocess.run(
             ["git", "config", "--get", key], cwd=project_dir,
             capture_output=True, text=True,
-            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=10,
+            shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, OSError):
         return None
@@ -1083,16 +1249,61 @@ def copy_agents(recorder, project_name):
     print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
-def copy_hooks(recorder):
-    """Copy Node.js hooks (always overwrite — enforcement code), with backup + diff."""
+def copy_hooks(recorder, *, allow_untouched: bool = False):
+    """Copy Node.js hooks (always overwrite — enforcement code), with backup + diff.
+
+    Verifies each shipped .cjs template against ``_EXPECTED_HOOK_HASHES`` and
+    refuses to install any hook whose hash differs. The point is to surface
+    tampered templates early (a modified hook gets RCE on every Bash call),
+    not to block legitimate local development — pass ``allow_untouched=True``
+    to bypass (CLI flag: --allow-untouched-hooks).
+    """
     print("\n[3/6] Hooks", end="")
     start = len(recorder.changes)
     hooks_dir = recorder.project_dir / ".claude" / "hooks"
     if not recorder.dry_run:
         hooks_dir.mkdir(parents=True, exist_ok=True)
+    hash_mismatches: list = []
     for hook_file in (TEMPLATES_DIR / "hooks").glob("*.cjs"):
         dest = hooks_dir / hook_file.name
-        recorder.put_file(dest, hook_file.read_bytes(), f"hooks/{hook_file.name}")
+        raw = hook_file.read_bytes()
+        expected = _EXPECTED_HOOK_HASHES.get(hook_file.name)
+        if expected is None:
+            # Unknown hook — not in our hash table. Warn but install (the
+            # alternative is refusing to bootstrap entirely when a new hook
+            # is added without updating the constant).
+            print(f"\n  ! WARNING: {hook_file.name} not in _EXPECTED_HOOK_HASHES", end="")
+        else:
+            actual = hashlib.sha256(raw).hexdigest()
+            if actual != expected:
+                hash_mismatches.append((hook_file.name, expected, actual))
+                continue  # skip install
+        recorder.put_file(dest, raw, f"hooks/{hook_file.name}")
+    if hash_mismatches:
+        if allow_untouched:
+            for name, exp, act in hash_mismatches:
+                print(
+                    f"\n  ! BYPASS: {name} hash mismatch (expected {exp[:16]}…, "
+                    f"got {act[:16]}…) — installing anyway because "
+                    f"--allow-untouched-hooks was set",
+                    end="",
+                )
+                # Re-loop and install the mismatched hooks. The previous loop
+                # `continue`d past them, so we re-process explicitly.
+                hook_file = TEMPLATES_DIR / "hooks" / name
+                if hook_file.exists():
+                    recorder.put_file(
+                        hooks_dir / name, hook_file.read_bytes(),
+                        f"hooks/{name}",
+                    )
+        else:
+            msg_lines = [
+                "ABORT: shipped hook(s) failed hash verification (supply-chain check).",
+                "Re-run with --allow-untouched-hooks to install anyway (NOT recommended).",
+            ]
+            for name, exp, act in hash_mismatches:
+                msg_lines.append(f"  - {name}: expected {exp[:16]}…  got {act[:16]}…")
+            raise RuntimeError("\n".join(msg_lines))
     print(f" ... {summarize_changes(recorder.changes[start:])}")
 
 
@@ -1246,7 +1457,7 @@ def _path_is_gitignored(project_dir: Path, rel: str) -> bool:
         result = subprocess.run(
             ["git", "check-ignore", "-q", rel], cwd=project_dir,
             capture_output=True, text=True, shell=_SHELL,
-            stdin=subprocess.DEVNULL, timeout=10,
+            stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -1259,7 +1470,7 @@ def _path_is_tracked(project_dir: Path, rel: str) -> bool:
         result = subprocess.run(
             ["git", "ls-files", "--error-unmatch", rel], cwd=project_dir,
             capture_output=True, text=True, shell=_SHELL,
-            stdin=subprocess.DEVNULL, timeout=10,
+            stdin=subprocess.DEVNULL, timeout=_GIT_TIMEOUT,
         )
     except (subprocess.TimeoutExpired, OSError):
         return False
@@ -1376,7 +1587,8 @@ def _print_cleanup_report(report: dict, dry_run: bool) -> None:
 def bootstrap_project(
     project_dir: Path, project_name: str | None, with_rules: bool,
     force: bool, upgrade: bool, dry_run: bool, no_diff: bool = False,
-    jsonl: bool = False,
+    jsonl: bool = False, harness: str = "claude",
+    allow_untouched_hooks: bool = False,
 ) -> int:
     """Run bootstrap for a single project. Returns exit code (0 = success)."""
     if not dry_run:
@@ -1385,6 +1597,7 @@ def bootstrap_project(
 
     print(f"\nBootstrapping beads orchestration for: {resolved_name}")
     print(f"Directory: {project_dir}")
+    print(f"Harness adapter: {harness}")
     if force:
         print("Mode: FORCE (overwriting all files)")
     if upgrade:
@@ -1404,9 +1617,10 @@ def bootstrap_project(
 
     try:
         copy_agents(recorder, resolved_name)
-        copy_hooks(recorder)
+        copy_hooks(recorder, allow_untouched=allow_untouched_hooks)
         copy_rules_and_skills(recorder, with_rules)
         copy_settings_and_claude_md(recorder, resolved_name)
+        install_harness_adapters(recorder, _resolve_harnesses(harness), resolved_name)
         setup_gitignore(project_dir, jsonl=jsonl, dry_run=dry_run)
         recorder.print_report()
 
@@ -1465,7 +1679,7 @@ Next steps:
 
 def run_batch_upgrade(
     parent_dir: Path, with_rules: bool, force: bool, dry_run: bool, no_diff: bool = False,
-    jsonl: bool = False,
+    jsonl: bool = False, harness: str = "claude",
 ) -> int:
     """Iterate direct subdirs of parent_dir that contain .beads/ and upgrade each."""
     if not parent_dir.exists() or not parent_dir.is_dir():
@@ -1486,7 +1700,8 @@ def run_batch_upgrade(
             rc = bootstrap_project(
                 project_dir=child, project_name=None, with_rules=with_rules,
                 force=force, upgrade=True, dry_run=dry_run, no_diff=no_diff,
-                jsonl=jsonl,
+                jsonl=jsonl, harness=harness,
+                allow_untouched_hooks=False,
             )
             if rc == 0:
                 upgraded += 1
@@ -1509,13 +1724,15 @@ def main():
     parser = argparse.ArgumentParser(description="Bootstrap beads orchestration")
     parser.add_argument("--project-name", default=None, help="Project name (auto-inferred if not provided)")
     parser.add_argument("--project-dir", default=".", help="Project directory")
-    parser.add_argument("--with-rules", action="store_true", help="Also copy dev rules (implementation-standard, logging, tdd)")
+    parser.add_argument("--with-rules", action="store_true", help="Also copy dev rules (implementation-standard, logging, tdd, debugging, resilience)")
     parser.add_argument("--force", action="store_true", help="Overwrite all files regardless of user modifications")
     parser.add_argument("--upgrade", action="store_true", help="Run init flow then cleanup obsolete items (uses existing manifest)")
     parser.add_argument("--dry-run", action="store_true", help="Print plan without writing anything")
     parser.add_argument("--no-diff", action="store_true", help="Suppress full per-file diffs (summary + backups still shown)")
     parser.add_argument("--all", dest="all_parent", default=None, metavar="PARENT_DIR", help="Batch upgrade: iterate direct subdirs of PARENT_DIR that contain .beads/. Implies --upgrade.")
     parser.add_argument("--jsonl", action="store_true", help="Opt into the readable .beads/issues.jsonl git-backup (default: Dolt-only sync, JSONL export disabled)")
+    parser.add_argument("--harness", default="claude", help="Harness adapter to install (claude, codex, opencode, pi, omp, omo, all). Default: claude (v3.x compat).")
+    parser.add_argument("--allow-untouched-hooks", action="store_true", help="Bypass the SHA-256 hook-tamper check (for local hook development only). Default: refused.")
     parser.add_argument("--color", dest="color", action="store_const", const="always", default="auto", help="Force ANSI color output (default: auto-detect a TTY)")
     parser.add_argument("--no-color", dest="color", action="store_const", const="never", help="Disable ANSI color output (also honors the NO_COLOR env var)")
     args = parser.parse_args()
@@ -1527,7 +1744,7 @@ def main():
         sys.exit(run_batch_upgrade(
             parent_dir=parent, with_rules=args.with_rules,
             force=args.force, dry_run=args.dry_run, no_diff=args.no_diff,
-            jsonl=args.jsonl,
+            jsonl=args.jsonl, harness=args.harness,
         ))
 
     project_dir = Path(args.project_dir).resolve()
@@ -1535,9 +1752,331 @@ def main():
         project_dir=project_dir, project_name=args.project_name,
         with_rules=args.with_rules, force=args.force,
         upgrade=args.upgrade, dry_run=args.dry_run, no_diff=args.no_diff,
-        jsonl=args.jsonl,
+        jsonl=args.jsonl, harness=args.harness,
+        allow_untouched_hooks=args.allow_untouched_hooks,
     ))
 
 
+def _expand_comp(adapter, by_id):
+    """Expand a composing adapter to [adapter, *composes_resolved] in order.
+    Used by install_harness_adapters so a single "omo" entry also installs
+    the composed opencode + codex configs without callers having to walk
+    adapters.expand() manually.
+    """
+    seen = {adapter.id}
+    out = [adapter]
+    for member_id in getattr(adapter, "composes", ()):
+        member = by_id.get(member_id)
+        if member is not None and member.id not in seen:
+            out.append(member)
+            seen.add(member.id)
+    return out
+
+
+
+# install_harness_adapters — per-harness plugin/extension installer
+# ============================================================================
+# Iterates a list of HarnessAdapter instances (resolved from --harness) and
+# emits the per-harness plugin/extension/agents/skills/rules files into
+# project_dir. The legacy `claude` adapter is byte-equivalent to v3.x — it
+# uses the existing copy_agents / copy_hooks / copy_rules_and_skills /
+# copy_settings_and_claude_md / setup_gitignore flow and writes nothing extra
+# for itself. New adapters (opencode, omp, …) emit per-harness trees
+# (`.opencode/`, `.omp/`, …) without re-running the legacy flow.
+#
+# Each non-claude adapter also installs the canonical "agents/", "skills/"
+# contents into the per-harness directory so the harness auto-discovers them
+# (OpenCode: `.opencode/agents/`, OMP: `.omp/agents/`, …).
+
+_BD_BEADS_INTEGRATION_MARKERS = (
+    "<!-- BEGIN BEADS INTEGRATION",
+    "<!-- END BEADS INTEGRATION -->",
+)
+
+_BD_SETUP_RECIPES_BY_ADAPTER = {
+    "opencode": "opencode",
+    "omp": "opencode",   # oh-my-pi embeds OpenCode as its primary harness
+    "omo": "opencode",   # OMO Ultimate / Light are OpenCode-based
+    "codex": "codex",
+}
+
+
+def _copy_template_file(recorder: "ChangeRecorder", src: Path, dest: Path, rel_key: str) -> None:
+    """Copy one file through the recorder; record_skip if user-modified."""
+    if not src.exists():
+        return
+    ok, _ = should_update_file(dest, rel_key, recorder.manifest, recorder.force)
+    content = src.read_bytes()
+    if ok:
+        recorder.put_file(dest, content, rel_key)
+    else:
+        if not recorder.dry_run:
+            save_upgrade(recorder.project_dir, rel_key, content.decode("utf-8", "replace"))
+        recorder.record_skip(rel_key)
+
+
+def _copy_template_dir(recorder: "ChangeRecorder", src: Path, dest: Path, prefix: str) -> None:
+    """Recursively copy a template directory through the recorder."""
+    if not src.exists() or not src.is_dir():
+        return
+    for src_file in sorted(src.rglob("*")):
+        if not src_file.is_file():
+            continue
+        rel = src_file.relative_to(src).as_posix()
+        dest_file = dest / rel
+        _copy_template_file(recorder, src_file, dest_file, f"{prefix}/{rel}")
+
+
+def _write_settings_for_adapter(recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_dir: Path) -> None:
+    """Emit the per-harness settings/config file (json or yml)."""
+    if not adapter.settings_source:
+        return
+    if adapter.id == "claude":
+        # Legacy flow already wrote .claude/settings.json; skip to keep v3.x parity.
+        return
+    dest = adapter.settings_destination(recorder.project_dir)
+    src = adapter.settings_source
+    rel_key = adapter.settings_rel_key()
+    if not src.exists():
+        return
+    # Codex ships only a 4-line comment placeholder. If the user already has a
+    # real Codex CLI config.toml at .codex/config.toml, NEVER clobber it
+    # (Codex has no JSON-style merge — `recorder.put_file` would replace the
+    # whole file, silently destroying their model / sandbox / approval_policy
+    # settings). For other harnesses (opencode, omp, omo, pi) the shipped
+    # template IS the intended config, so we still write it.
+    if adapter.id == "codex" and dest.exists():
+        existing = dest.read_text(encoding="utf-8").strip()
+        # Anything beyond the placeholder comments = user-owned content.
+        non_comment_lines = [
+            line for line in existing.splitlines()
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if non_comment_lines:
+            # Existing user config: leave it alone. Only mark in manifest so
+            # the user sees we noticed the file.
+            if not recorder.dry_run:
+                recorder.changes.append({
+                    "key": rel_key, "action": "preserved",
+                    "label": "existing user config", "added": 0, "removed": 0,
+                    "diff": [], "backup": None,
+                })
+            return
+    # Inject the per-harness path of the plugin/extension into the config so the
+    # harness auto-loads it. Only do this when the template still references
+    # the claude-style `.cjs` hook path.
+    raw = src.read_text(encoding="utf-8")
+    if adapter.id == "opencode":
+        # opencode.json lives at the project root; the plugin path is
+        # therefore relative to that root (.opencode/plugins/...).
+        if '"plugin"' not in raw:
+            raw = raw.rstrip().rstrip("}").rstrip("]").rstrip(",") + ',\n  "plugin": ["./.opencode/plugins/claude-protocol.js"]\n}'
+    elif adapter.id in ("omp", "omo", "pi"):
+        # config.yml is at .omp/config.yml, so extensions/ is a sibling.
+        if "claude-protocol" not in raw and "extensions:" in raw:
+            raw = raw.rstrip() + "\n  - ./extensions/claude-protocol.js\n"
+    recorder.put_file(dest, raw.encode("utf-8"), rel_key)
+
+
+def _write_beads_marker_for_adapter(recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_dir: Path) -> None:
+    """Run `bd setup <recipe>` and write the resulting AGENTS.md marker into the
+    harness-specific agent-instructions file (idempotent if already present)."""
+    recipe = _BD_SETUP_RECIPES_BY_ADAPTER.get(adapter.id)
+    if not recipe or not shutil.which("bd"):
+        return
+    out_path = adapter.agent_instructions_destination(project_dir)
+    if out_path.exists() and "BEGIN BEADS INTEGRATION" in out_path.read_text(encoding="utf-8"):
+        return
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    if not recorder.dry_run:
+        try:
+            subprocess.run(
+                ["bd", "setup", recipe, "-o", str(out_path)],
+                cwd=project_dir, capture_output=True, text=True,
+                shell=_SHELL, stdin=subprocess.DEVNULL, timeout=_BD_TIMEOUT_DEFAULT,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            return
+    if out_path.exists():
+        rel_key = adapter.agent_instructions_rel_key()
+        try:
+            recorder.put_file(out_path, out_path.read_bytes(), rel_key)
+        except Exception:
+            pass
+
+
+def _write_agent_instructions_for_adapter(
+    recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_name: str,
+) -> None:
+    """Append the claude-protocol orchestrator marker on top of whatever
+    ``bd setup <recipe>`` (or a previous install) wrote into the
+    per-harness AGENTS.md / CLAUDE.md. Idempotent: if the marker is
+    already there, no work is done.
+    """
+    src = adapter.agent_instructions_source
+    if not src or not src.exists():
+        return
+    body = src.read_text(encoding="utf-8").replace("[Project]", project_name)
+    marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
+    dest = adapter.agent_instructions_destination(recorder.project_dir)
+    rel_key = adapter.agent_instructions_rel_key()
+    if recorder.dry_run:
+        # No-op: the marker logic runs only when actually writing.
+        return
+    if dest.exists():
+        existing = dest.read_text(encoding="utf-8")
+        if marker in existing:
+            return  # already installed
+        new_content = existing.rstrip() + f"\n\n---\n\n{marker}\n{body}"
+        recorder.put_file(dest, new_content.encode("utf-8"), rel_key, backup=False)
+    else:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        recorder.put_file(dest, f"{marker}\n{body}".encode("utf-8"), rel_key, backup=False)
+
+
+def _ensure_agent_instructions_exist(
+    recorder: "ChangeRecorder", adapter: "_HarnessAdapter", project_name: str,
+) -> None:
+    """Write the body of AGENTS.md / CLAUDE.md so external ``bd setup <recipe>``
+    can later replace the file. Only writes when the file does NOT already
+    exist on disk — never overwrites a Beads-managed or user-authored file.
+    """
+    src = adapter.agent_instructions_source
+    if not src or not src.exists():
+        return
+    body = src.read_text(encoding="utf-8").replace("[Project]", project_name)
+    marker = "<!-- BEGIN CLAUDE-PROTOCOL ORCHESTRATION -->"
+    dest = adapter.agent_instructions_destination(recorder.project_dir)
+    rel_key = adapter.agent_instructions_rel_key()
+    if dest.exists():
+        return
+    if not recorder.dry_run:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    recorder.put_file(dest, f"{marker}\n{body}".encode("utf-8"), rel_key, backup=False)
+
+
+def install_harness_adapters(
+    recorder: "ChangeRecorder", adapters: list, project_name: str,
+) -> None:
+    """Install per-harness adapters in declaration order.
+
+    `adapters` may be either :class:`HarnessAdapter` instances or plain id
+    strings (e.g. ``"opencode"``); strings are resolved via the
+    ``adapters.resolve()`` helper so callers can pass either shape.
+    """
+    if _HarnessAdapter is None:
+        raise RuntimeError(
+            "adapters module not importable; bootstrap.py is missing adapters.py"
+        )
+
+    resolved: list = []
+    by_id = {a.id: a for a in _ALL_ADAPTERS}
+    for entry in adapters:
+        if isinstance(entry, str):
+            if entry not in by_id:
+                raise ValueError(f"unknown harness: {entry!r}")
+            # Expand any composing adapter inline so a single --harness omo
+            # call also installs the composed opencode + codex configs.
+            for member in _expand_comp(by_id[entry], by_id):
+                resolved.append(member)
+        elif isinstance(entry, _HarnessAdapter):
+            for member in _expand_comp(entry, by_id):
+                resolved.append(member)
+        else:
+            raise TypeError(
+                f"install_harness_adapters expected HarnessAdapter or str, got {type(entry).__name__}"
+            )
+
+    seen: set[str] = set()
+    for adapter in resolved:
+        if adapter.id in seen:
+            continue
+        seen.add(adapter.id)
+        if adapter.id == "claude":
+            continue  # legacy flow is invoked by bootstrap_project
+
+        project_dir = recorder.project_dir
+        adapter_root = project_dir / adapter.install_root
+        template_root = adapter.adapter_dir
+
+        # 1. plugin/extension entry + shared runtime policy
+        #
+        # We ship ONE entry per harness (the bundled .js) and skip the
+        # .ts source. OpenCode and OMP both discover .ts and .js in the
+        # same directory; emitting both causes the same hook to fire
+        # twice (one module per loader). The .ts source remains in
+        # ``templates/`` for the maintainers' benefit; consumers get
+        # the pre-bundled JS so double-loading is impossible.
+        if adapter.id == "opencode":
+            for rel in ("plugins/claude-protocol.js", "shared/runtime-policy.js"):
+                src = template_root / rel
+                if src.exists():
+                    _copy_template_file(
+                        recorder, src, adapter_root / rel,
+                        f"{adapter.install_root}/{rel}",
+                    )
+        elif adapter.id in ("omp", "omo"):
+            for rel in ("extensions/claude-protocol.js", "shared/runtime-policy.js"):
+                src = template_root / rel
+                if src.exists():
+                    _copy_template_file(
+                        recorder, src, adapter_root / rel,
+                        f"{adapter.install_root}/{rel}",
+                    )
+
+        # 2. per-harness settings/config
+        _write_settings_for_adapter(recorder, adapter, project_dir)
+
+        # 3. canonical agents/, skills/, rules/ (shared content emitted to the
+        #    per-harness root so the harness auto-discovers them).
+        shared_agents = TEMPLATES_DIR / "agents"
+        shared_skills = TEMPLATES_DIR / "skills"
+        shared_rules = TEMPLATES_DIR / "rules"
+        if (template_root / "agents").exists():
+            _copy_template_dir(recorder, template_root / "agents", adapter_root / "agents",
+                               f"{adapter.install_root}/agents")
+        elif shared_agents.exists() and adapter.id in ("opencode", "omp", "omo", "pi"):
+            _copy_template_dir(recorder, shared_agents, adapter_root / "agents",
+                               f"{adapter.install_root}/agents")
+        if (template_root / "skills").exists():
+            _copy_template_dir(recorder, template_root / "skills", adapter_root / "skills",
+                               f"{adapter.install_root}/skills")
+        elif shared_skills.exists() and adapter.id in ("opencode", "omp", "omo", "pi"):
+            _copy_template_dir(recorder, shared_skills, adapter_root / "skills",
+                               f"{adapter.install_root}/skills")
+        if adapter.uses_shared_rules and shared_rules.exists():
+            _copy_template_dir(recorder, shared_rules, adapter_root / "rules",
+                               f"{adapter.install_root}/rules")
+
+        # 4. Write the body of AGENTS.md / CLAUDE.md FIRST so the file
+        #    exists. If the Beads CLI then runs and rewrites the file
+        #    with its own block, that's fine — the orchestrator marker
+        #    is re-appended in step 6.
+        _ensure_agent_instructions_exist(recorder, adapter, project_name)
+
+        # 5. Beads integration marker via `bd setup <recipe>`. The Beads CLI
+        #    overwrites the AGENTS.md from scratch with its own marker block;
+        #    we run the CLI when supported (no-op if already installed). Both
+        #    `omp` and `omo` use the OpenCode Beads recipe because OMP embeds
+        #    the opencode harness.
+        if adapter.id in ("opencode", "omp", "omo"):
+            _write_beads_marker_for_adapter(recorder, adapter, project_dir)
+
+        # 6. Re-append the orchestrator marker on top of whatever the Beads
+        #    CLI just wrote (or skip if the file is missing). Idempotent.
+        _write_agent_instructions_for_adapter(recorder, adapter, project_name)
+
+
+# Lookup table used by bootstrap_project to resolve string ids to adapter
+# objects (the install_harness_adapters API accepts both shapes).
+_BY_ID: dict[str, "_HarnessAdapter"] = (
+    {a.id: a for a in _ALL_ADAPTERS} if _ALL_ADAPTERS else {}
+)
+
+
+# IMPORTANT: must stay at end of file. Defines like install_harness_adapters
+# below this point would NameError on script-mode invocation (python
+# bootstrap.py ...), because the script exits at main() before those defs
+# are ever bound.
 if __name__ == "__main__":
     main()

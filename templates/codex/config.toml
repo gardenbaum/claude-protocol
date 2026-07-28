@@ -1,0 +1,4 @@
+# Codex CLI config — placeholder. The Claude-protocol orchestrator installs
+# agents, skills, rules, and agent-instructions for Codex; Codex-specific
+# native hooks live here when present. See Beads' `bd setup codex` for the
+# canonical beads integration layout.

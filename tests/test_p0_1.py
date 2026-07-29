@@ -83,23 +83,37 @@ class TestAdaptersImportFailure:
     """
 
     def test_resolve_harnesses_none_raises_runtimeerror(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys,
     ) -> None:
-        """_resolve_harnesses = None must surface as RuntimeError, not TypeError."""
+        """_resolve_harnesses = None must surface as RuntimeError, not TypeError.
+
+        The bootstrap_project API is "returns 1 on failure" — the RuntimeError
+        is raised internally, caught by the except block, and the diagnostic
+        is printed to stderr. We assert both: the printed exception type is
+        RuntimeError (was TypeError), and the exit code is non-zero.
+        """
         monkeypatch.setattr(bootstrap, "_resolve_harnesses", None)
         _stub_heavy_steps(monkeypatch, tmp_path)
 
-        with pytest.raises(RuntimeError) as exc_info:
-            bootstrap.bootstrap_project(
-                project_dir=tmp_path, project_name="t",
-                with_rules=False, force=False, upgrade=False,
-                dry_run=False, harness="claude",
-            )
+        rc = bootstrap.bootstrap_project(
+            project_dir=tmp_path, project_name="t",
+            with_rules=False, force=False, upgrade=False,
+            dry_run=False, harness="claude",
+        )
+        captured = capsys.readouterr()
 
-        msg = str(exc_info.value)
-        # Diagnostic must name the failure layer; reject silent TypeError.
-        assert "adapters" in msg.lower(), (
-            f"RuntimeError message must mention 'adapters'; got: {msg!r}"
+        assert rc != 0, "expected non-zero exit code on RuntimeError"
+        # The diagnostic must name the failure layer; reject silent TypeError.
+        combined = captured.out + captured.err
+        assert "RuntimeError" in combined, (
+            f"Expected RuntimeError in output; got: {combined!r}"
+        )
+        assert "adapters" in combined.lower(), (
+            f"Expected 'adapters' in diagnostic; got: {combined!r}"
+        )
+        # Negative: must NOT be the original TypeError wording.
+        assert "'NoneType' object is not callable" not in combined, (
+            f"Original TypeError wording must be replaced; got: {combined!r}"
         )
 
     def test_resolve_harnesses_none_exits_one(

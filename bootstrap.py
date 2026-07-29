@@ -26,6 +26,7 @@ import re
 import shutil
 import tempfile
 import subprocess
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1620,6 +1621,16 @@ def bootstrap_project(
         copy_hooks(recorder, allow_untouched=allow_untouched_hooks)
         copy_rules_and_skills(recorder, with_rules)
         copy_settings_and_claude_md(recorder, resolved_name)
+        # Defensive: if adapters.py failed to import, _resolve_harnesses is
+        # None and the bare call would surface as a confusing
+        # "TypeError: 'NoneType' object is not callable" with no clue.
+        # Catch that here and surface a clear RuntimeError naming the
+        # failure layer so the user knows to investigate adapters.py.
+        if _resolve_harnesses is None:
+            raise RuntimeError(
+                "adapters module not importable; bootstrap.py is missing "
+                "adapters.py or it raised on import"
+            )
         install_harness_adapters(recorder, _resolve_harnesses(harness), resolved_name)
         setup_gitignore(project_dir, jsonl=jsonl, dry_run=dry_run)
         recorder.print_report()
@@ -1667,7 +1678,13 @@ Next steps:
         # Mid-step failure: surface the change report so the user sees
         # what landed, and best-effort save the manifest so the next run
         # doesn't churn through those files as 'modified'.
-        print(f"\n[BOOTSTRAP FAILED] {type(e).__name__}: {e}")
+        # P0-1(a): print the full traceback so users can debug without
+        # cloning the repo. Previously only the exception type and message
+        # were shown, which left "TypeError: 'NoneType' object is not
+        # callable" completely opaque.
+        print(f"\n[BOOTSTRAP FAILED] {type(e).__name__}: {e}",
+              file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         recorder.print_report()
         if not dry_run:
             try:

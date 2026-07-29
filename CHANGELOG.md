@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/).
 
+## [Unreleased]
+
+### Fixed
+- **P0-1 — Swallowed TypeError in step 6 of `bootstrap_project`** — when
+  `adapters.py` failed to import, the `except ImportError` fallback set
+  `_resolve_harnesses = None`, and the bare call at the install-harness
+  step surfaced as `TypeError: 'NoneType' object is not callable`. The
+  `[BOOTSTRAP FAILED]` line printed only the exception type + message
+  with no traceback, leaving the failure layer invisible. Fixes:
+  - `bootstrap.py`: validate `_resolve_harnesses is not None` before
+    calling; raise `RuntimeError("adapters module not importable; ...")`
+    so the diagnostic names the failure layer.
+  - `bootstrap.py`: print `traceback.print_exc()` to stderr on any
+    bootstrap failure (was: only `f"{type(e).__name__}: {e}"`). Exit
+    code 1 path is unchanged.
+  - Tests: `tests/test_p0_1.py::TestAdaptersImportFailure` (4 tests
+    covering RuntimeError surface, exit code, and traceback presence)
+    and `TestBootstrapFailedExitCode` (1 regression guard).
+
 ## [3.9.0] - 2026-07-28
 
 ### Removed
